@@ -203,9 +203,20 @@ cmd_sim() {
     ;;
   esac
   set_cfg SIM_SLOT "$slot"
-  local idx
-  idx=$(modem_index) || true
-  [[ -n $idx ]] && mmcli -m "$idx" --set-primary-sim-slot="$slot"
+
+  # SetPrimarySimSlot is not on ModemManager's D-Bus whitelist, so it is
+  # root-only no matter what polkit says — the bus rejects the message before
+  # polkit is ever consulted. Let the helper do it from the unit.
+  if systemctl cat "$UNIT" >/dev/null 2>&1; then
+    echo "Switching to SIM slot $slot (this reconnects the modem)…"
+    systemctl restart "$UNIT" || {
+      echo "Slot switch failed — see: omarchy-wwan log" >&2
+      return 1
+    }
+    cmd_status
+  else
+    echo "Saved SIM_SLOT=$slot. Run 'omarchy-wwan apply' to switch."
+  fi
 }
 
 # Carrier settings come from the mobile-broadband-provider-info database — the

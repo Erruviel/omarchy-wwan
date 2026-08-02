@@ -163,7 +163,14 @@ Two grants, both deliberate:
   root-only `0600` file makes networkd discard the **entire** `.network` and leave the
   interface unmanaged.
 - This modem defaults to the **eSIM in slot 2**; the physical card is slot 1. Switching
-  slots needs the `Control` action, not `Device.Control`.
+  slots is **root-only and no polkit rule can change that**: ModemManager's D-Bus policy
+  denies method calls by default and whitelists them individually, and
+  `SetPrimarySimSlot` is not on that list — the bus rejects the message before polkit is
+  consulted. `omarchy-wwan sim` therefore delegates the switch to the helper. The
+  giveaway is the error text: `DBus.Error.AccessDenied` is the bus, whereas a polkit
+  refusal names `PolicyKit` and the action it wanted.
+- Selecting an empty eSIM leaves the modem registered nowhere, which looks exactly like
+  poor coverage. `doctor` flags a config/hardware slot mismatch for that reason.
 - `modem.generic.bearers.value[N]` is the data bearer. `3gpp.eps.initial-bearer` appears
   first in `mmcli -K` output and has no interface — do not pick it.
 - When mobile data misbehaves, read `journalctl -u systemd-networkd` first. Every failure
