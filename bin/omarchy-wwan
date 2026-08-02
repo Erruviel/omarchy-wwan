@@ -249,7 +249,17 @@ cmd_doctor() {
 
   echo "system side:"
   check "helper installed" "$(present /usr/local/bin/omarchy-wwan-helper)"
-  check "polkit rule" "$(present /etc/polkit-1/rules.d/50-omarchy-wwan.rules)"
+  # /etc/polkit-1/rules.d is mode 750, so a normal user cannot even stat the
+  # file. Probe the outcome instead — that also proves the rule actually loaded
+  # rather than merely existing.
+  local polkit_ok=no
+  if command -v pkcheck >/dev/null; then
+    pkcheck --action-id org.freedesktop.ModemManager1.Control --process $$ >/dev/null 2>&1 &&
+      polkit_ok=ok
+  elif [[ -r /etc/polkit-1/rules.d/50-omarchy-wwan.rules ]]; then
+    polkit_ok=ok
+  fi
+  check "polkit rule active (no password prompts)" "$polkit_ok"
   check "networkd drop-in" "$(present "$DROPIN")"
   check "unit known to systemd" "$(systemctl cat "$UNIT" >/dev/null 2>&1 && echo ok || echo no)"
 

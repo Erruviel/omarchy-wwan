@@ -1,7 +1,13 @@
 
 /* >>> omarchy-wwan >>> */
+/* The cellular glyph is wider than the Wi-Fi arc it sits next to, so without a
+   reserved box it gets clipped and crowds the Wi-Fi indicator. Margin is on the
+   right only — Bluetooth already supplies the gap on the left. 16px was picked
+   by measuring the rendered bar: it puts this icon at a ~21px gap, matching the
+   20-22px the surrounding modules produce. */
 #custom-wwan {
-  margin-right: 13px;
+  min-width: 12px;
+  margin: 0 16px 0 0;
 }
 
 /* Dim mobile data when the modem is powered but not carrying traffic. */

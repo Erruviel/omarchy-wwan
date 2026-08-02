@@ -44,6 +44,13 @@ cd ~/Projects/omarchy-wwan
 Run it as your normal user — it uses `sudo` only for the system-side pieces. It is
 idempotent, so re-running it is also the repair command.
 
+To repair only the desktop integration on a machine where the system half is already in
+place, and skip the password prompt:
+
+```sh
+OMARCHY_WWAN_SKIP_SYSTEM=1 ./install.sh
+```
+
 Then set your APN if `internet` is not right (it is correct for all four Polish carriers):
 
 ```sh

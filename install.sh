@@ -140,8 +140,15 @@ install -m 755 "$REPO/hooks/post-update" "$HOME/.config/omarchy/hooks/post-updat
 
 # --------------------------------------------------------------- system pieces
 
-say "installing the system pieces (sudo)"
-sudo "$REPO/system/install-system.sh" "$USER" "$CONFIG"
+# Set OMARCHY_WWAN_SKIP_SYSTEM=1 to install only the user-side pieces, e.g. when
+# repairing the desktop integration on a machine where the system half is
+# already in place and you would rather not be asked for a password.
+if [[ ${OMARCHY_WWAN_SKIP_SYSTEM:-0} == 1 ]]; then
+  say "skipping the system pieces (OMARCHY_WWAN_SKIP_SYSTEM=1)"
+else
+  say "installing the system pieces (sudo)"
+  sudo "$REPO/system/install-system.sh" "$USER" "$CONFIG"
+fi
 
 # ---------------------------------------------------------------------- finish
 
