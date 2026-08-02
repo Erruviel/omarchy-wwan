@@ -34,6 +34,11 @@ modem_index() {
 
 notify() { notify-send -u low "Mobile data" "$1" 2>/dev/null; }
 
+get_cfg() {
+  sed -n "s/^[[:space:]]*$1[[:space:]]*=//p" "$CONFIG" 2>/dev/null | tail -1 |
+    sed -e 's/[[:space:]]\+#.*$//' -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//'
+}
+
 set_cfg() {
   local key="$1" val="$2"
   if grep -qE "^[[:space:]]*${key}[[:space:]]*=" "$CONFIG" 2>/dev/null; then
@@ -203,6 +208,110 @@ cmd_sim() {
   [[ -n $idx ]] && mmcli -m "$idx" --set-primary-sim-slot="$slot"
 }
 
+# Carrier settings come from the mobile-broadband-provider-info database — the
+# same one NetworkManager's mobile broadband wizard uses.
+PROVIDERS=omarchy-wwan-providers
+
+carrier_write() { # <apn> <label> <user> <password> <provider>
+  set_cfg APN "$1"
+  set_cfg APN_USER "$3"
+  set_cfg APN_PASS "$4"
+
+  echo "Carrier:  $5"
+  echo "APN:      $1${2:+  ($2)}"
+  [[ -n $3 ]] && echo "Username: $3"
+  echo
+  echo "Run 'omarchy-wwan apply' to activate it."
+}
+
+carrier_auto() {
+  local idx code mcc mnc row cc country provider apn
+
+  idx=$(modem_index)
+  [[ -n $idx ]] || {
+    echo "No modem detected." >&2
+    return 1
+  }
+
+  code=$(kv "$(mmcli -m "$idx" -K 2>/dev/null)" modem.3gpp.operator-code)
+  [[ -n $code ]] || {
+    echo "The modem has not registered on a network yet, so there is no operator" >&2
+    echo "code to look up. Pick the carrier by hand instead:" >&2
+    echo "    omarchy-wwan carrier list" >&2
+    return 1
+  }
+
+  # An operator code is MCC (always 3 digits) followed by a 2- or 3-digit MNC.
+  mcc=${code:0:3}
+  mnc=${code:3}
+
+  row=$($PROVIDERS lookup "$mcc" "$mnc") || return 1
+  IFS=$'\t' read -r cc country provider <<<"$row"
+
+  apn=$($PROVIDERS apns "$cc" "$provider" | head -1)
+  [[ -n $apn ]] || {
+    echo "$provider ($country) has no data APN in the database." >&2
+    return 1
+  }
+
+  echo "Detected $provider in $country (MCC $mcc, MNC $mnc)."
+  IFS=$'\t' read -r value label user password <<<"$apn"
+  carrier_write "$value" "$label" "$user" "$password" "$provider"
+}
+
+cmd_carrier() {
+  case "${1:-}" in
+  auto | detect) carrier_auto ;;
+  list)
+    if [[ -z ${2:-} ]]; then
+      $PROVIDERS countries
+    elif [[ -z ${3:-} ]]; then
+      $PROVIDERS providers "$2"
+    else
+      $PROVIDERS apns "$2" "$3"
+    fi
+    ;;
+  set)
+    [[ -n ${2:-} && -n ${3:-} ]] || {
+      echo "usage: omarchy-wwan carrier set <country-code> <provider> [apn]" >&2
+      return 2
+    }
+    local rows row
+    rows=$($PROVIDERS apns "$2" "$3") || return 1
+    if [[ -n ${4:-} ]]; then
+      row=$(awk -F'\t' -v want="$4" '$1 == want { print; exit }' <<<"$rows")
+      [[ -n $row ]] || {
+        echo "$3 has no APN '$4'. Available:" >&2
+        cut -f1 <<<"$rows" >&2
+        return 1
+      }
+    else
+      row=$(head -1 <<<"$rows")
+    fi
+    local value label user password
+    IFS=$'\t' read -r value label user password <<<"$row"
+    carrier_write "$value" "$label" "$user" "$password" "$3"
+    ;;
+  *)
+    cat >&2 <<'EOF'
+usage: omarchy-wwan carrier <command>
+
+  auto                          detect the carrier from the SIM and set its APN
+  list                          list countries
+  list <cc>                     list carriers in that country
+  list <cc> <provider>          list that carrier's data APNs
+  set <cc> <provider> [apn]     apply a carrier's APN settings
+
+Examples:
+  omarchy-wwan carrier auto
+  omarchy-wwan carrier list pl
+  omarchy-wwan carrier set pl Orange
+EOF
+    return 2
+    ;;
+  esac
+}
+
 cmd_autoconnect() {
   case "${1:-}" in
   on)
@@ -269,6 +378,22 @@ cmd_doctor() {
   check "drop-in readable by systemd-network" \
     "$([[ $grp == systemd-network ]] && echo ok || echo no)"
 
+  echo "config:"
+  check "provider database" \
+    "$(command -v omarchy-wwan-providers >/dev/null && echo ok || echo no)"
+
+  # A config/hardware mismatch is not broken yet, but the next connect will
+  # switch slots and drop whatever is running now — worth saying out loud.
+  local want_slot cur_slot idx
+  want_slot=$(get_cfg SIM_SLOT)
+  idx=$(modem_index)
+  [[ -n $idx ]] && cur_slot=$(kv "$(mmcli -m "$idx" -K 2>/dev/null)" modem.generic.primary-sim-slot)
+  if [[ -n $want_slot && -n ${cur_slot:-} && $want_slot != "$cur_slot" ]]; then
+    check "SIM slot: config wants $want_slot, modem is on $cur_slot (next connect will switch)" no
+  else
+    check "SIM slot matches the config" ok
+  fi
+
   echo "upstream drift:"
   local now ref
   now=$(upstream_setup_menu_hash)
@@ -283,8 +408,10 @@ cmd_doctor() {
 
   if ((problems)); then
     echo
-    echo "$problems problem(s). Re-run the installer to repair:"
+    echo "$problems item(s) need attention."
+    echo "Anything missing or clobbered is restored by re-running the installer:"
     echo "    $REPO_HINT/install.sh"
+    echo "Settings mismatches are yours to decide — edit $CONFIG."
     return 1
   fi
   echo
@@ -313,6 +440,7 @@ apply)
   require_system_half || exit 1
   systemctl restart "$UNIT"
   ;;
+carrier) cmd_carrier "${2:-}" "${3:-}" "${4:-}" "${5:-}" ;;
 autoconnect) cmd_autoconnect "${2:-}" ;;
 log) journalctl -u "$UNIT" -n 50 --no-pager ;;
 config) "${EDITOR:-nano}" "$CONFIG" ;;
@@ -326,7 +454,8 @@ usage: omarchy-wwan <command>
   restart             reconnect
   apply               re-read wwan.conf and reconnect
   sim {1|2}           select physical SIM (1) or eSIM (2)
-  apn <name>          set the APN
+  carrier ...         pick country/carrier and apply its APN (see: carrier)
+  apn <name>          set the APN by hand
   autoconnect on|off  connect automatically at boot
   log                 recent connection log
   doctor              verify the patch is still fully in place

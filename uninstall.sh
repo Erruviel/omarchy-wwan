@@ -54,7 +54,9 @@ sudo "$REPO/system/uninstall-system.sh"
 # --------------------------------------------------------------- user pieces
 
 say "removing the CLI"
-rm -f "$HOME/.local/bin/omarchy-wwan" "$HOME/.local/bin/omarchy-launch-wwan"
+rm -f "$HOME/.local/bin/omarchy-wwan" \
+  "$HOME/.local/bin/omarchy-launch-wwan" \
+  "$HOME/.local/bin/omarchy-wwan-providers"
 
 say "removing the post-update check"
 rm -f "$HOME/.config/omarchy/hooks/post-update.d/omarchy-wwan"

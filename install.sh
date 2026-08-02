@@ -34,12 +34,32 @@ backup_once() {
 
 has_block() { grep -qF "$BEGIN" "$1" 2>/dev/null; }
 
+# Cut out any block we installed previously so it can be replaced with the
+# current one. Without this, re-running after a `git pull` would leave the old
+# version in place — the opposite of what a repair command should do.
+strip_block() {
+  local f="$1"
+  has_block "$f" || return 0
+  python3 - "$f" <<'PY'
+import re, sys
+path = sys.argv[1]
+s = open(path).read()
+s = re.sub(r"[^\n]*>>> omarchy-wwan >>>.*?<<< omarchy-wwan <<<[^\n]*\n", "", s, flags=re.S)
+open(path, "w").write(s)
+PY
+}
+
 # ---------------------------------------------------------------- user scripts
 
 say "installing CLI into ~/.local/bin"
 mkdir -p "$HOME/.local/bin"
 install -m 755 "$REPO/bin/omarchy-wwan" "$HOME/.local/bin/omarchy-wwan"
 install -m 755 "$REPO/bin/omarchy-launch-wwan" "$HOME/.local/bin/omarchy-launch-wwan"
+install -m 755 "$REPO/bin/omarchy-wwan-providers" "$HOME/.local/bin/omarchy-wwan-providers"
+
+[[ -f /usr/share/mobile-broadband-provider-info/serviceproviders.xml ]] ||
+  echo "   warning: mobile-broadband-provider-info is not installed — the carrier
+            wizard will not work. Install it with: omarchy pkg add mobile-broadband-provider-info"
 
 case ":$PATH:" in
 *":$HOME/.local/bin:"*) ;;
@@ -62,13 +82,10 @@ MENU="$HOME/.config/omarchy/extensions/menu.sh"
 mkdir -p "$(dirname "$MENU")"
 [[ -f $MENU ]] || : >"$MENU"
 
-if has_block "$MENU"; then
-  say "menu entry already present"
-else
-  say "adding the Mobile entry to the Omarchy menu"
-  backup_once "$MENU"
-  cat "$REPO/config/menu.sh.part" >>"$MENU"
-fi
+say "installing the Mobile entry in the Omarchy menu"
+backup_once "$MENU"
+strip_block "$MENU"
+cat "$REPO/config/menu.sh.part" >>"$MENU"
 
 # Record which upstream Setup menu we forked, so `doctor` can detect drift.
 mkdir -p "$STATE"
@@ -83,12 +100,12 @@ WB="$HOME/.config/waybar/config.jsonc"
 CSS="$HOME/.config/waybar/style.css"
 
 if [[ -f $WB ]]; then
-  if has_block "$WB"; then
-    say "waybar module already present"
-  else
-    say "adding the waybar module"
-    backup_once "$WB"
-    MODULE_FILE="$REPO/config/waybar-module.jsonc" python3 - "$WB" <<'PY'
+  say "installing the waybar module"
+  backup_once "$WB"
+  strip_block "$WB"
+  # The entry in modules-right lives outside the marked block.
+  sed -i '/^[[:space:]]*"custom\/wwan",[[:space:]]*$/d' "$WB"
+  MODULE_FILE="$REPO/config/waybar-module.jsonc" python3 - "$WB" <<'PY'
 import os, sys
 
 path = sys.argv[1]
@@ -115,19 +132,15 @@ if not placed_entry:
 
 open(path, "w").write("".join(out))
 PY
-  fi
 else
   echo "   warning: $WB not found, skipping waybar module"
 fi
 
 if [[ -f $CSS ]]; then
-  if has_block "$CSS"; then
-    say "waybar style already present"
-  else
-    say "adding the waybar style"
-    backup_once "$CSS"
-    cat "$REPO/config/waybar-style.css" >>"$CSS"
-  fi
+  say "installing the waybar style"
+  backup_once "$CSS"
+  strip_block "$CSS"
+  cat "$REPO/config/waybar-style.css" >>"$CSS"
 else
   echo "   warning: $CSS not found, skipping waybar style"
 fi

@@ -51,12 +51,34 @@ place, and skip the password prompt:
 OMARCHY_WWAN_SKIP_SYSTEM=1 ./install.sh
 ```
 
-Then set your APN if `internet` is not right (it is correct for all four Polish carriers):
+## Carrier wizard
+
+APNs come from `mobile-broadband-provider-info` — the same database
+NetworkManager's mobile broadband wizard uses, covering 154 countries. MMS and WAP
+APNs are filtered out, so you only ever see ones that carry data.
+
+Easiest path, when the modem is already registered:
 
 ```sh
-omarchy-wwan apn <name>
+omarchy-wwan carrier auto     # reads MCC/MNC off the SIM and applies that carrier's APN
 omarchy-wwan apply
 ```
+
+Or pick by hand:
+
+```sh
+omarchy-wwan carrier list                  # 154 countries
+omarchy-wwan carrier list pl               # carriers in Poland
+omarchy-wwan carrier list pl Orange        # that carrier's data APNs
+omarchy-wwan carrier set pl Orange         # apply APN, username and password
+```
+
+From the desktop: **Setup → Mobile → Carrier**, offering *Detect from SIM*,
+*Choose country* (country → carrier → APN, with the APN step skipped when there is only
+one) and *Enter APN manually*.
+
+Username and password are filled in automatically for carriers that need them — Orange
+Poland, for instance, requires `internet`/`internet`.
 
 ## Usage
 
@@ -68,7 +90,8 @@ omarchy-wwan status              modem, operator, signal, IP
 omarchy-wwan connect|disconnect  bring mobile data up or down
 omarchy-wwan toggle
 omarchy-wwan sim 1|2             physical card (1) or built-in eSIM (2)
-omarchy-wwan apn <name>
+omarchy-wwan carrier ...         carrier wizard (see above)
+omarchy-wwan apn <name>          set the APN by hand
 omarchy-wwan apply               re-read the config and reconnect
 omarchy-wwan autoconnect on|off
 omarchy-wwan log
@@ -112,6 +135,7 @@ also copied to `~/.local/state/omarchy-wwan/backups/` on first modification.
 | --- | --- |
 | `~/.local/bin/omarchy-wwan` | CLI, waybar JSON, health check |
 | `~/.local/bin/omarchy-launch-wwan` | opens the menu |
+| `~/.local/bin/omarchy-wwan-providers` | reads the carrier database |
 | `~/.config/omarchy/wwan.conf` | APN, SIM slot, PIN, route metric |
 | `~/.config/omarchy/extensions/menu.sh` | Setup → Mobile entry (marked block) |
 | `~/.config/waybar/config.jsonc`, `style.css` | indicator (marked block) |

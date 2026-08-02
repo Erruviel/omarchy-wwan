@@ -1,0 +1,135 @@
+#!/usr/bin/env python3
+"""Query the mobile-broadband-provider-info database.
+
+Backs the carrier wizard in `omarchy-wwan carrier` and the Omarchy menu. Output
+is tab-separated so shell callers can cut it apart without a JSON parser.
+
+    countries                       -> code \t Country
+    providers <cc>                  -> Provider
+    apns <cc> <provider>            -> apn \t label \t user \t password
+    lookup <mcc> <mnc>              -> cc \t Country \t Provider
+"""
+import sys
+import xml.etree.ElementTree as ET
+
+DB = "/usr/share/mobile-broadband-provider-info/serviceproviders.xml"
+
+
+def die(msg):
+    print(msg, file=sys.stderr)
+    raise SystemExit(1)
+
+
+def load():
+    try:
+        return ET.parse(DB).getroot()
+    except FileNotFoundError:
+        die(f"{DB} not found — install mobile-broadband-provider-info")
+    except ET.ParseError as e:
+        die(f"could not parse {DB}: {e}")
+
+
+def plain_name(node, default=""):
+    """First <name> without an xml:lang attribute, i.e. the English one."""
+    fallback = None
+    for n in node.findall("name"):
+        if "{http://www.w3.org/XML/1998/namespace}lang" not in n.attrib:
+            return (n.text or "").strip()
+        if fallback is None:
+            fallback = (n.text or "").strip()
+    return fallback or default
+
+
+def data_apns(gsm):
+    """APNs usable for a data connection, in database order, deduplicated.
+
+    An <apn> with usage types that do not include "internet" is for MMS or WAP;
+    using one of those as the data APN produces a connection that carries no
+    traffic, so they are filtered out. An APN with no <usage> at all is assumed
+    to be general-purpose, which is how the database marks most of them.
+    """
+    seen, out = set(), []
+    for apn in gsm.findall("apn"):
+        usages = [u.get("type") for u in apn.findall("usage")]
+        if usages and "internet" not in usages:
+            continue
+        value = apn.get("value", "")
+        if value in seen:
+            continue
+        seen.add(value)
+        out.append(
+            (
+                value,
+                plain_name(apn, value or "(blank)"),
+                (apn.findtext("username") or "").strip(),
+                (apn.findtext("password") or "").strip(),
+            )
+        )
+    return out
+
+
+def find_country(root, cc):
+    for c in root:
+        if c.get("code", "").lower() == cc.lower():
+            return c
+    die(f"unknown country code: {cc}")
+
+
+def main():
+    if len(sys.argv) < 2:
+        die(__doc__)
+    cmd, args = sys.argv[1], sys.argv[2:]
+    root = load()
+
+    if cmd == "countries":
+        rows = sorted(
+            ((c.get("code", ""), plain_name(c, c.get("code", ""))) for c in root),
+            key=lambda r: r[1],
+        )
+        for code, name in rows:
+            print(f"{code}\t{name}")
+
+    elif cmd == "providers":
+        if not args:
+            die("usage: providers <country-code>")
+        for p in find_country(root, args[0]).findall("provider"):
+            if p.find("gsm") is not None:
+                print(plain_name(p, "?"))
+
+    elif cmd == "apns":
+        if len(args) < 2:
+            die("usage: apns <country-code> <provider>")
+        wanted = args[1].strip().lower()
+        for p in find_country(root, args[0]).findall("provider"):
+            if plain_name(p).strip().lower() != wanted:
+                continue
+            gsm = p.find("gsm")
+            if gsm is None:
+                continue
+            for value, label, user, password in data_apns(gsm):
+                print(f"{value}\t{label}\t{user}\t{password}")
+            return
+        die(f"no GSM provider named {args[1]} in {args[0]}")
+
+    elif cmd == "lookup":
+        if len(args) < 2:
+            die("usage: lookup <mcc> <mnc>")
+        mcc, mnc = args[0], args[1].lstrip("0") or "0"
+        for c in root:
+            for p in c.findall("provider"):
+                gsm = p.find("gsm")
+                if gsm is None:
+                    continue
+                for nid in gsm.findall("network-id"):
+                    # The database is inconsistent about leading zeros in MNC.
+                    if nid.get("mcc") == mcc and (nid.get("mnc", "").lstrip("0") or "0") == mnc:
+                        print(f"{c.get('code','')}\t{plain_name(c)}\t{plain_name(p)}")
+                        return
+        die(f"no provider found for MCC {mcc} MNC {mnc}")
+
+    else:
+        die(f"unknown command: {cmd}")
+
+
+if __name__ == "__main__":
+    main()
