@@ -24,8 +24,8 @@ that make the whole thing work unattended.
 Both default routes stay in the table at once:
 
 ```
-default via 192.168.12.1  dev wlan0            metric 600   <- traffic goes here
-default via 10.87.191.5   dev wwp0s20f0u4c2    metric 700
+default via 192.168.1.1  dev wlan0            metric 600   <- traffic goes here
+default via 10.0.0.1     dev wwp0s20f0u4c2    metric 700
 ```
 
 The lower metric wins, so Wi-Fi carries traffic whenever it is up. Lose Wi-Fi and its route
