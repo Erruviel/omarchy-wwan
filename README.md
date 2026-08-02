@@ -1,0 +1,143 @@
+# omarchy-wwan
+
+Mobile broadband (WWAN/LTE) support for [Omarchy](https://omarchy.org/), with a menu
+entry and a waybar indicator.
+
+Built and tested on a **Dell Latitude 9430** with the **DW5821e-eSIM Snapdragon X20 LTE**
+modem, Omarchy 3.8.4, systemd 261.
+
+## Why this exists
+
+Omarchy manages networking with **iwd + systemd-networkd**, not NetworkManager. Everything
+needed for mobile data is already installed — ModemManager runs, the kernel drivers bind,
+`/etc/systemd/network/20-wwan.network` exists — but nothing ever brings the modem up, and
+there is no NetworkManager UI to hang the controls off. That last mile is what this adds.
+
+The connection itself is *not* script-driven. systemd 260 added a `[MobileNetwork]` section
+that makes systemd-networkd drive ModemManager directly and apply the addressing the bearer
+hands back. This repo generates that configuration and supplies the parts it does not
+cover: SIM slot selection, the on/off switch, the desktop integration, and the permissions
+that make the whole thing work unattended.
+
+## Wi-Fi takes priority, mobile is the fallback
+
+Both default routes stay in the table at once:
+
+```
+default via 192.168.12.1  dev wlan0            metric 600   <- traffic goes here
+default via 10.87.191.5   dev wwp0s20f0u4c2    metric 700
+```
+
+The lower metric wins, so Wi-Fi carries traffic whenever it is up. Lose Wi-Fi and its route
+disappears, leaving the modem's — failover is immediate, because the modem stays connected
+the whole time instead of dialling on demand. Reconnect Wi-Fi and traffic moves straight
+back. `ROUTE_METRIC` in the config is the single knob controlling this.
+
+## Install
+
+```sh
+git clone <this repo> ~/Projects/omarchy-wwan
+cd ~/Projects/omarchy-wwan
+./install.sh
+```
+
+Run it as your normal user — it uses `sudo` only for the system-side pieces. It is
+idempotent, so re-running it is also the repair command.
+
+Then set your APN if `internet` is not right (it is correct for all four Polish carriers):
+
+```sh
+omarchy-wwan apn <name>
+omarchy-wwan apply
+```
+
+## Usage
+
+Omarchy menu → **Setup → Mobile**, or the waybar icon (click for the menu, right-click to
+toggle).
+
+```
+omarchy-wwan status              modem, operator, signal, IP
+omarchy-wwan connect|disconnect  bring mobile data up or down
+omarchy-wwan toggle
+omarchy-wwan sim 1|2             physical card (1) or built-in eSIM (2)
+omarchy-wwan apn <name>
+omarchy-wwan apply               re-read the config and reconnect
+omarchy-wwan autoconnect on|off
+omarchy-wwan log
+omarchy-wwan doctor              verify the patch is still fully in place
+```
+
+`disconnect` uses rfkill, and systemd-rfkill remembers that across reboots — mobile data
+stays off until you connect again.
+
+## Surviving Omarchy updates
+
+Nothing here is written into `~/.local/share/omarchy/`, so `omarchy update` cannot
+overwrite it. Two things can still come loose:
+
+- `omarchy refresh waybar` resets the waybar config and drops the module.
+- An upstream change to the Setup menu leaves this repo's `show_setup_menu` override stale,
+  so newly added upstream entries would not appear.
+
+A hook installed at `~/.config/omarchy/hooks/post-update.d/omarchy-wwan` runs
+`omarchy-wwan doctor` after every `omarchy update` and sends a desktop notification if
+anything needs attention. `install.sh` records a fingerprint of the upstream Setup menu at
+install time, which is how the drift check works.
+
+Run `omarchy-wwan doctor` yourself any time. If it reports problems, re-run `./install.sh`.
+
+## Uninstall
+
+```sh
+./uninstall.sh            # keeps ~/.config/omarchy/wwan.conf
+./uninstall.sh --purge    # removes it too
+```
+
+Edits to shared files are wrapped in `>>> omarchy-wwan >>>` markers, so uninstalling cuts
+out exactly this patch and leaves anything else you put in those files alone. Originals are
+also copied to `~/.local/state/omarchy-wwan/backups/` on first modification.
+`20-wwan.network` and ModemManager are left as they were.
+
+## What gets installed where
+
+| Path | Purpose |
+| --- | --- |
+| `~/.local/bin/omarchy-wwan` | CLI, waybar JSON, health check |
+| `~/.local/bin/omarchy-launch-wwan` | opens the menu |
+| `~/.config/omarchy/wwan.conf` | APN, SIM slot, PIN, route metric |
+| `~/.config/omarchy/extensions/menu.sh` | Setup → Mobile entry (marked block) |
+| `~/.config/waybar/config.jsonc`, `style.css` | indicator (marked block) |
+| `~/.config/omarchy/hooks/post-update.d/omarchy-wwan` | post-update check |
+| `/usr/local/bin/omarchy-wwan-helper` | privileged operations |
+| `/etc/systemd/system/omarchy-wwan*.service` | connect at boot and after resume |
+| `/etc/systemd/network/20-wwan.network.d/10-omarchy-mobile.conf` | generated `[MobileNetwork]` |
+| `/etc/polkit-1/rules.d/50-omarchy-wwan.rules` | permissions (see below) |
+
+## Permissions
+
+Two grants, both deliberate:
+
+1. **`systemd-network` gets `org.freedesktop.ModemManager1.Device.Control`.**
+   systemd-networkd drops privileges to that user, which has no login session, so
+   ModemManager's stock `allow_active=yes` policy can never match it and every
+   `simple-connect` is refused. Without this the modem never connects.
+2. **An active `wheel` session gets modem control and start/stop on the two `omarchy-wwan`
+   units** — so the menu and waybar never raise a password prompt. The systemd grant is
+   scoped to those two unit names.
+
+## Gotchas worth knowing
+
+- The drop-in must be readable by `systemd-network` (`root:systemd-network 0640`). A
+  root-only `0600` file makes networkd discard the **entire** `.network` and leave the
+  interface unmanaged.
+- This modem defaults to the **eSIM in slot 2**; the physical card is slot 1. Switching
+  slots needs the `Control` action, not `Device.Control`.
+- `modem.generic.bearers.value[N]` is the data bearer. `3gpp.eps.initial-bearer` appears
+  first in `mmcli -K` output and has no interface — do not pick it.
+- When mobile data misbehaves, read `journalctl -u systemd-networkd` first. Every failure
+  above was silent or misleading everywhere else.
+
+## License
+
+MIT

@@ -1,0 +1,18 @@
+#!/bin/bash
+# Installed to ~/.config/omarchy/hooks/post-update.d/omarchy-wwan
+#
+# `omarchy update` can quietly undo parts of this patch — a refreshed waybar
+# config drops the module, and upstream changes to the Setup menu leave our
+# override stale. Check after every update and say so, rather than letting the
+# user discover it when the icon is gone.
+
+command -v omarchy-wwan >/dev/null || exit 0
+
+if ! report=$(omarchy-wwan doctor 2>&1); then
+  if command -v omarchy-notification-send >/dev/null; then
+    omarchy-notification-send "󰢿" "Mobile data patch needs attention" \
+      "$report" -u critical
+  else
+    notify-send -u critical "Mobile data patch needs attention" "$report"
+  fi
+fi

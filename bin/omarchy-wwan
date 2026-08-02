@@ -1,0 +1,328 @@
+#!/bin/bash
+# omarchy:summary=Control the WWAN (mobile broadband) modem.
+#
+# User-facing front end for Omarchy's WWAN support. Read-only queries go
+# straight to ModemManager; anything privileged is delegated to
+# omarchy-wwan.service (see ~/.config/omarchy/wwan/).
+
+set -uo pipefail
+
+CONFIG="$HOME/.config/omarchy/wwan.conf"
+UNIT=omarchy-wwan.service
+DROPIN=/etc/systemd/network/20-wwan.network.d/10-omarchy-mobile.conf
+STATE="${XDG_STATE_HOME:-$HOME/.local/state}/omarchy-wwan"
+REPO_HINT="${OMARCHY_WWAN_REPO:-$HOME/Projects/omarchy-wwan}"
+
+# Fingerprint of the upstream Setup menu we forked. Recorded at install time so
+# `doctor` can tell when an Omarchy update moved out from under our override.
+upstream_setup_menu_hash() {
+  local src="$HOME/.local/share/omarchy/bin/omarchy-menu"
+  [[ -r $src ]] || return 1
+  awk '/^show_setup_menu\(\) \{/, /^\}/' "$src" | sha256sum | cut -d' ' -f1
+}
+
+kv() {
+  awk -v key="$2" -F: '
+    { k = $1; gsub(/[ \t]+$/, "", k)
+      if (k == key) { sub(/^[^:]*:[ \t]*/, ""); if ($0 == "--") exit; print; exit } }
+  ' <<<"$1"
+}
+
+modem_index() {
+  mmcli -L -K 2>/dev/null | sed -n 's|.*/Modem/\([0-9]\+\).*|\1|p' | head -1
+}
+
+notify() { notify-send -u low "Mobile data" "$1" 2>/dev/null; }
+
+set_cfg() {
+  local key="$1" val="$2"
+  if grep -qE "^[[:space:]]*${key}[[:space:]]*=" "$CONFIG" 2>/dev/null; then
+    sed -i "s|^[[:space:]]*${key}[[:space:]]*=.*|${key}=${val}|" "$CONFIG"
+  else
+    printf '%s=%s\n' "$key" "$val" >>"$CONFIG"
+  fi
+}
+
+# Collapses the modem into one of: absent, disabled, searching, registered,
+# connected — plus operator, access technology and signal strength.
+# Exact field match: "unblocked" contains "blocked" as a substring, so a naive
+# grep reports every working modem as switched off.
+wwan_blocked() {
+  rfkill --output SOFT --noheadings list wwan 2>/dev/null |
+    awk '$1 == "blocked" { found = 1 } END { exit !found }'
+}
+
+read_state() {
+  STATE=absent OPERATOR="" TECH="" SIGNAL=0 IFACE="" IPADDR=""
+
+  # A soft-blocked radio is a deliberate "off", not a modem that is missing or
+  # hunting for a network — and while blocked the modem may vanish from mmcli.
+  if wwan_blocked; then
+    STATE=disabled
+    return 0
+  fi
+
+  local idx dump
+  idx=$(modem_index)
+  [[ -n $idx ]] || return 0
+  MODEM=$idx
+
+  dump=$(mmcli -m "$idx" -K 2>/dev/null)
+  OPERATOR=$(kv "$dump" modem.3gpp.operator-name)
+  # access-technologies is a list, even when the modem reports just one.
+  TECH=$(kv "$dump" "modem.generic.access-technologies.value[1]" | tr '[:lower:]' '[:upper:]')
+  SIGNAL=$(kv "$dump" modem.generic.signal-quality.value)
+  SIGNAL=${SIGNAL:-0}
+
+  local mstate reg
+  mstate=$(kv "$dump" modem.generic.state)
+  reg=$(kv "$dump" modem.3gpp.registration-state)
+
+  case $mstate in
+  connected)
+    STATE=connected
+    IFACE=$(sed -n 's/^[[:space:]]*modem\.generic\.ports\.value\[[0-9]*\][[:space:]]*:[[:space:]]*\([^ ]*\) (net)$/\1/p' <<<"$dump" | head -1)
+    [[ -n $IFACE ]] && IPADDR=$(ip -4 -br addr show "$IFACE" 2>/dev/null | awk '{print $3}')
+    ;;
+  registered | disconnecting | connecting) STATE=registered ;;
+  enabled | searching)
+    [[ $reg == home || $reg == roaming ]] && STATE=registered || STATE=searching
+    ;;
+  locked) STATE=locked ;;
+  *) STATE=disabled ;;
+  esac
+}
+
+# Always a cellular-bars glyph, so the icon's shape never changes — only how many
+# bars are filled. States that carry no signal show the empty outline and get
+# dimmed by CSS instead of switching to a different symbol.
+#
+#   U+F08BF md-signal_cellular_outline   empty
+#   U+F08BC md-signal_cellular_1         1/3
+#   U+F08BD md-signal_cellular_2         2/3
+#   U+F08BE md-signal_cellular_3         full
+signal_icon() {
+  case $STATE in
+  absent | disabled | locked | searching) printf '\U000F08BF' ;;
+  *)
+    if ((SIGNAL >= 67)); then printf '\U000F08BE'
+    elif ((SIGNAL >= 34)); then printf '\U000F08BD'
+    elif ((SIGNAL > 0)); then printf '\U000F08BC'
+    else printf '\U000F08BF'
+    fi
+    ;;
+  esac
+}
+
+cmd_status() {
+  read_state
+  case $STATE in
+  absent)
+    echo "No WWAN modem detected."
+    return 1
+    ;;
+  disabled) echo "Mobile data: off" ;;
+  locked) echo "Mobile data: SIM locked (PIN required)" ;;
+  searching) echo "Mobile data: searching for network (signal ${SIGNAL}%)" ;;
+  registered) echo "Mobile data: registered on ${OPERATOR:-unknown}, not connected (signal ${SIGNAL}%)" ;;
+  connected)
+    echo "Mobile data: connected"
+    echo "  operator:  ${OPERATOR:-unknown}"
+    echo "  technology: ${TECH:-unknown}"
+    echo "  signal:    ${SIGNAL}%"
+    echo "  interface: ${IFACE:-unknown}${IPADDR:+  ($IPADDR)}"
+    ;;
+  esac
+  return 0
+}
+
+cmd_waybar() {
+  read_state
+  # Empty text hides the module entirely on machines with no modem.
+  if [[ $STATE == absent ]]; then
+    echo '{"text":"","tooltip":"","class":"absent"}'
+    return 0
+  fi
+
+  local tooltip
+  case $STATE in
+  disabled) tooltip="Mobile data off" ;;
+  locked) tooltip="SIM locked — PIN required" ;;
+  searching) tooltip="Searching for network" ;;
+  registered) tooltip="${OPERATOR:-Registered} — not connected" ;;
+  connected) tooltip="${OPERATOR:-Connected}${TECH:+ · $TECH} · ${SIGNAL}%${IPADDR:+\\n$IPADDR}" ;;
+  esac
+
+  printf '{"text":"%s","tooltip":"%s","class":"%s","percentage":%s}\n' \
+    "$(signal_icon)" "$tooltip" "$STATE" "${SIGNAL:-0}"
+}
+
+# The privileged half lives in a systemd unit; without it nothing can connect.
+require_system_half() {
+  systemctl cat "$UNIT" >/dev/null 2>&1 && return 0
+  echo "The system-side WWAN support is not installed yet." >&2
+  echo "Run once:  sudo ~/.config/omarchy/wwan/install.sh" >&2
+  notify "Not installed — run: sudo ~/.config/omarchy/wwan/install.sh"
+  return 1
+}
+
+cmd_connect() {
+  require_system_half || return 1
+  notify "Connecting…"
+  if systemctl start "$UNIT"; then
+    read_state
+    notify "Connected to ${OPERATOR:-mobile network}"
+  else
+    notify "Connection failed — see: journalctl -u $UNIT"
+    return 1
+  fi
+}
+
+cmd_disconnect() {
+  systemctl stop "$UNIT" && notify "Disconnected"
+}
+
+cmd_toggle() {
+  read_state
+  if [[ $STATE == connected ]]; then cmd_disconnect; else cmd_connect; fi
+}
+
+cmd_sim() {
+  local slot="${1:-}"
+  case $slot in
+  1 | physical) slot=1 ;;
+  2 | esim) slot=2 ;;
+  *)
+    echo "usage: omarchy-wwan sim {1|2}   (1 = physical card, 2 = eSIM)" >&2
+    return 2
+    ;;
+  esac
+  set_cfg SIM_SLOT "$slot"
+  local idx
+  idx=$(modem_index) || true
+  [[ -n $idx ]] && mmcli -m "$idx" --set-primary-sim-slot="$slot"
+}
+
+cmd_autoconnect() {
+  case "${1:-}" in
+  on)
+    set_cfg AUTOCONNECT yes
+    systemctl enable "$UNIT" && echo "Autoconnect enabled."
+    ;;
+  off)
+    set_cfg AUTOCONNECT no
+    systemctl disable "$UNIT" && echo "Autoconnect disabled."
+    ;;
+  *)
+    systemctl is-enabled "$UNIT"
+    ;;
+  esac
+}
+
+# Verifies every piece the installer put in place. An Omarchy update can quietly
+# undo some of them — `omarchy refresh waybar` drops the module, and upstream
+# edits to the Setup menu leave our override stale — so this is what the
+# post-update hook runs. Exits non-zero when anything needs attention.
+cmd_doctor() {
+  local problems=0
+
+  check() { # check <description> <test-result>
+    if [[ $2 == ok ]]; then
+      printf '  ok    %s\n' "$1"
+    else
+      printf '  FAIL  %s\n' "$1"
+      problems=$((problems + 1))
+    fi
+  }
+
+  present() { [[ -e $1 ]] && echo ok || echo no; }
+  contains() { grep -q "$2" "$1" 2>/dev/null && echo ok || echo no; }
+
+  echo "user side:"
+  check "omarchy-wwan on PATH" "$(command -v omarchy-wwan >/dev/null && echo ok || echo no)"
+  check "omarchy-launch-wwan on PATH" "$(command -v omarchy-launch-wwan >/dev/null && echo ok || echo no)"
+  check "config $CONFIG" "$(present "$CONFIG")"
+  check "menu entry" "$(contains "$HOME/.config/omarchy/extensions/menu.sh" 'omarchy-wwan')"
+  check "waybar module" "$(contains "$HOME/.config/waybar/config.jsonc" 'custom/wwan')"
+  check "waybar style" "$(contains "$HOME/.config/waybar/style.css" 'custom-wwan')"
+  check "post-update hook" "$(present "$HOME/.config/omarchy/hooks/post-update.d/omarchy-wwan")"
+
+  echo "system side:"
+  check "helper installed" "$(present /usr/local/bin/omarchy-wwan-helper)"
+  check "polkit rule" "$(present /etc/polkit-1/rules.d/50-omarchy-wwan.rules)"
+  check "networkd drop-in" "$(present "$DROPIN")"
+  check "unit known to systemd" "$(systemctl cat "$UNIT" >/dev/null 2>&1 && echo ok || echo no)"
+
+  # An unreadable drop-in makes networkd discard the whole .network file.
+  local grp
+  grp=$(stat -c '%G' "$DROPIN" 2>/dev/null)
+  check "drop-in readable by systemd-network" \
+    "$([[ $grp == systemd-network ]] && echo ok || echo no)"
+
+  echo "upstream drift:"
+  local now ref
+  now=$(upstream_setup_menu_hash)
+  ref=$(cat "$STATE/upstream-setup-menu.sha" 2>/dev/null)
+  if [[ -z $ref ]]; then
+    check "Setup menu baseline recorded" no
+  elif [[ $now == "$ref" ]]; then
+    check "Setup menu matches the version we forked" ok
+  else
+    check "Setup menu changed upstream — our copy may be missing new entries" no
+  fi
+
+  if ((problems)); then
+    echo
+    echo "$problems problem(s). Re-run the installer to repair:"
+    echo "    $REPO_HINT/install.sh"
+    return 1
+  fi
+  echo
+  echo "All good."
+  return 0
+}
+
+case "${1:-status}" in
+status) cmd_status ;;
+doctor) cmd_doctor ;;
+waybar) cmd_waybar ;;
+connect | up) cmd_connect ;;
+disconnect | down) cmd_disconnect ;;
+toggle) cmd_toggle ;;
+restart) systemctl restart "$UNIT" ;;
+sim) cmd_sim "${2:-}" ;;
+apn)
+  [[ -n ${2:-} ]] || {
+    echo "usage: omarchy-wwan apn <name>" >&2
+    exit 2
+  }
+  set_cfg APN "$2"
+  echo "APN set to $2. Run 'omarchy-wwan apply' to activate it."
+  ;;
+apply)
+  require_system_half || exit 1
+  systemctl restart "$UNIT"
+  ;;
+autoconnect) cmd_autoconnect "${2:-}" ;;
+log) journalctl -u "$UNIT" -n 50 --no-pager ;;
+config) "${EDITOR:-nano}" "$CONFIG" ;;
+*)
+  cat >&2 <<'EOF'
+usage: omarchy-wwan <command>
+
+  status              show modem/connection state (default)
+  connect|disconnect  bring mobile data up or down
+  toggle              connect if down, disconnect if up
+  restart             reconnect
+  apply               re-read wwan.conf and reconnect
+  sim {1|2}           select physical SIM (1) or eSIM (2)
+  apn <name>          set the APN
+  autoconnect on|off  connect automatically at boot
+  log                 recent connection log
+  doctor              verify the patch is still fully in place
+  config              edit ~/.config/omarchy/wwan.conf
+  waybar              JSON status for the waybar module
+EOF
+  exit 2
+  ;;
+esac

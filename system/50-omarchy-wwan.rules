@@ -1,0 +1,49 @@
+// Omarchy WWAN polkit policy. Two distinct grants:
+//
+//   1. systemd-networkd, so it can establish the bearer at all.
+//   2. an active desktop session, so the menu and waybar never prompt for a
+//      password. ModemManager already allows Device.Control for active
+//      sessions, but Control (SIM slot switching) requires auth_admin, and
+//      starting/stopping units requires auth_admin_keep.
+//
+// The systemd grants are scoped to the two omarchy-wwan units — nothing else.
+
+// systemd-networkd is what actually establishes the bearer for [MobileNetwork].
+// It drops privileges to the unprivileged "systemd-network" system user, which
+// has no login session, so ModemManager's stock allow_active=yes policy can
+// never match it and every simple-connect is refused. Grant exactly the one
+// action it asks for, and only to that system user.
+polkit.addRule(function (action, subject) {
+  if (
+    subject.user == "systemd-network" &&
+    action.id == "org.freedesktop.ModemManager1.Device.Control"
+  ) {
+    return polkit.Result.YES;
+  }
+  return polkit.Result.NOT_HANDLED;
+});
+
+polkit.addRule(function (action, subject) {
+  if (!subject.isInGroup("wheel") || !subject.active) {
+    return polkit.Result.NOT_HANDLED;
+  }
+
+  if (
+    action.id == "org.freedesktop.ModemManager1.Control" ||
+    action.id == "org.freedesktop.ModemManager1.Device.Control"
+  ) {
+    return polkit.Result.YES;
+  }
+
+  if (
+    action.id == "org.freedesktop.systemd1.manage-units" ||
+    action.id == "org.freedesktop.systemd1.manage-unit-files"
+  ) {
+    var unit = action.lookup("unit");
+    if (unit == "omarchy-wwan.service" || unit == "omarchy-wwan-resume.service") {
+      return polkit.Result.YES;
+    }
+  }
+
+  return polkit.Result.NOT_HANDLED;
+});

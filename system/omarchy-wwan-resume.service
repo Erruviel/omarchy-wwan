@@ -1,0 +1,11 @@
+[Unit]
+Description=Reconnect Omarchy WWAN after resume
+After=suspend.target hibernate.target suspend-then-hibernate.target
+
+[Service]
+Type=oneshot
+# Only reconnect if the user had mobile data up before suspending.
+ExecStart=/bin/sh -c 'systemctl is-active --quiet omarchy-wwan.service && systemctl restart --no-block omarchy-wwan.service || true'
+
+[Install]
+WantedBy=suspend.target hibernate.target suspend-then-hibernate.target

@@ -1,0 +1,102 @@
+
+# >>> omarchy-wwan >>>
+# Managed by omarchy-wwan. Remove with: ~/Projects/omarchy-wwan/uninstall.sh
+#
+# Omarchy runs iwd + systemd-networkd, so there is no NetworkManager UI to hang
+# mobile broadband off. These entries drive `omarchy-wwan` instead.
+
+omarchy_wwan_present() {
+  command -v omarchy-wwan >/dev/null && mmcli -L 2>/dev/null | grep -q '/Modem/'
+}
+
+show_wwan_menu() {
+  local options autoconnect
+
+  if omarchy-wwan status 2>/dev/null | grep -q '^Mobile data: connected'; then
+    options="󰢿  Disconnect"
+  else
+    options="󰢾  Connect"
+  fi
+
+  if systemctl is-enabled --quiet omarchy-wwan.service 2>/dev/null; then
+    autoconnect="on"
+  else
+    autoconnect="off"
+  fi
+
+  options="$options\n󰋼  Status\n󱂆  SIM Card\n󰑪  APN\n󰑓  Autoconnect ($autoconnect)\n󰋚  Logs"
+
+  case $(menu "Mobile" "$options") in
+  *Disconnect*) omarchy-wwan disconnect ;;
+  *Connect*) present_terminal "omarchy-wwan connect" ;;
+  *Status*) omarchy-notification-send "󰢾" "Mobile data" "$(omarchy-wwan status)" ;;
+  *SIM*) show_wwan_sim_menu ;;
+  *APN*) show_wwan_apn_input ;;
+  *Autoconnect*)
+    if [[ $autoconnect == on ]]; then omarchy-wwan autoconnect off; else omarchy-wwan autoconnect on; fi
+    ;;
+  *Logs*) present_terminal "omarchy-wwan log" ;;
+  *) back_to show_setup_menu ;;
+  esac
+}
+
+show_wwan_sim_menu() {
+  case $(menu "SIM" "󰄜  Physical SIM card\n󰗹  Built-in eSIM") in
+  *Physical*) omarchy-wwan sim 1 ;;
+  *eSIM*) omarchy-wwan sim 2 ;;
+  *) back_to show_wwan_menu ;;
+  esac
+}
+
+show_wwan_apn_input() {
+  local apn
+  apn=$(omarchy-menu-input "APN")
+
+  if [[ -n $apn ]]; then
+    omarchy-wwan apn "$apn"
+  else
+    back_to show_wwan_menu
+  fi
+}
+
+# Overrides upstream show_setup_menu purely to insert the Mobile entry next to
+# Wifi. This is the one piece that can drift: if an Omarchy update adds a new
+# entry to the Setup menu, it will not appear until this copy is refreshed.
+# `omarchy-wwan doctor` compares the two and warns when they diverge.
+show_setup_menu() {
+  local options="  Audio\n  Wifi"
+  omarchy_wwan_present && options="$options\n󰢾  Mobile"
+  options="$options\n󰂯  Bluetooth\n󱐋  Power Profile\n  System Sleep\n󰍹  Monitors"
+  [[ -f ~/.config/hypr/bindings.conf ]] && options="$options\n  Keybindings"
+  [[ -f ~/.config/hypr/input.conf ]] && options="$options\n  Input"
+  options="$options\n  Defaults\n󰱔  DNS\n  Security\n  Config"
+
+  case $(menu "Setup" "$options") in
+  *Audio*) omarchy-launch-audio ;;
+  *Wifi*) omarchy-launch-wifi ;;
+  *Mobile*) show_wwan_menu ;;
+  *Bluetooth*) omarchy-launch-bluetooth ;;
+  *Power*) show_setup_power_menu ;;
+  *System*) show_setup_system_menu ;;
+  *Monitors*) open_in_editor ~/.config/hypr/monitors.conf ;;
+  *Keybindings*) open_in_editor ~/.config/hypr/bindings.conf ;;
+  *Input*) open_in_editor ~/.config/hypr/input.conf ;;
+  *Defaults*) show_setup_default_menu ;;
+  *DNS*) present_terminal omarchy-setup-dns ;;
+  *Security*) show_setup_security_menu ;;
+  *Config*) show_setup_config_menu ;;
+  *) show_main_menu ;;
+  esac
+}
+
+# Wrap go_to_menu so `omarchy-menu mobile` (used by waybar and the launcher)
+# jumps straight here, without duplicating upstream's routing table.
+eval "omarchy_orig_go_to_menu() $(declare -f go_to_menu | tail -n +2)"
+
+go_to_menu() {
+  case "${1,,}" in
+  *mobile* | *wwan*) show_wwan_menu ;;
+  *) omarchy_orig_go_to_menu "$@" ;;
+  esac
+}
+# <<< omarchy-wwan <<<

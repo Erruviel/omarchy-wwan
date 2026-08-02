@@ -1,0 +1,17 @@
+[Unit]
+Description=Omarchy WWAN (mobile broadband) connection
+Documentation=man:mmcli(1)
+Requires=ModemManager.service
+After=ModemManager.service systemd-networkd.service
+Wants=network.target
+Before=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/bin/omarchy-wwan-helper up
+ExecStop=/usr/local/bin/omarchy-wwan-helper down
+TimeoutStartSec=180
+
+[Install]
+WantedBy=multi-user.target

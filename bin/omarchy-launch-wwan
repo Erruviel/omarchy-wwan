@@ -1,0 +1,5 @@
+#!/bin/bash
+
+# omarchy:summary=Launch the Omarchy mobile broadband (WWAN) controls.
+
+exec omarchy-menu mobile

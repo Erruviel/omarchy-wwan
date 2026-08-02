@@ -1,0 +1,14 @@
+
+/* >>> omarchy-wwan >>> */
+#custom-wwan {
+  margin-right: 13px;
+}
+
+/* Dim mobile data when the modem is powered but not carrying traffic. */
+#custom-wwan.disabled,
+#custom-wwan.locked,
+#custom-wwan.searching,
+#custom-wwan.registered {
+  opacity: 0.5;
+}
+/* <<< omarchy-wwan <<< */
