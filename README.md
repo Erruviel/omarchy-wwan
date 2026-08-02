@@ -6,6 +6,15 @@ entry and a waybar indicator.
 Built and tested on a **Dell Latitude 9430** with the **DW5821e-eSIM Snapdragon X20 LTE**
 modem, Omarchy 3.8.4, systemd 261.
 
+## Requirements
+
+- **systemd 260 or newer** — the `[MobileNetwork]` section this is built on does not exist
+  before that, and without it nothing will establish a connection.
+- ModemManager, and `mobile-broadband-provider-info` for the carrier wizard. Both ship with
+  Omarchy already.
+- A networkd-managed WWAN interface, i.e. `/etc/systemd/network/20-wwan.network` matching
+  `ww*`, which is Omarchy's default.
+
 ## Why this exists
 
 Omarchy manages networking with **iwd + systemd-networkd**, not NetworkManager. Everything
