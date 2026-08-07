@@ -57,6 +57,16 @@ wwan_blocked() {
     awk '$1 == "blocked" { found = 1 } END { exit !found }'
 }
 
+# `absent` from mmcli does not mean "no WWAN card": ModemManager needs upwards
+# of a minute to probe the ports at boot, and the modem object briefly vanishes
+# around suspend and SIM-slot switches. rfkill and sysfs still see the hardware
+# through all of that, so use them to tell "not probed yet" from "no card".
+wwan_hw_present() {
+  [[ -n $(rfkill list wwan 2>/dev/null) ]] && return 0
+  compgen -G '/sys/class/net/ww*' >/dev/null && return 0
+  compgen -G '/dev/cdc-wdm*' >/dev/null
+}
+
 read_state() {
   STATE=absent OPERATOR="" TECH="" SIGNAL=0 IFACE="" IPADDR=""
 
@@ -143,9 +153,15 @@ cmd_status() {
 
 cmd_waybar() {
   read_state
-  # Empty text hides the module entirely on machines with no modem.
+  # Empty text hides the module entirely — but only on machines with no modem.
+  # A card that merely has not been probed yet keeps its spot in the bar, or
+  # the icon would blink out at every boot and resume.
   if [[ $STATE == absent ]]; then
-    echo '{"text":"","tooltip":"","class":"absent"}'
+    if wwan_hw_present; then
+      printf '{"text":"\U000F08BF","tooltip":"Modem starting…","class":"searching","percentage":0}\n'
+    else
+      echo '{"text":"","tooltip":"","class":"absent"}'
+    fi
     return 0
   fi
 
