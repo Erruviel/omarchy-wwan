@@ -87,6 +87,43 @@ wait_for_connected() {
   return 1
 }
 
+# After suspend the DW5821e can come back without re-enumerating on USB.
+# ModemManager then recreates the modem object without re-probing cdc-wdm0 and
+# is left driving it over AT only ("could not grab port cdc-wdm0" in the log).
+# An AT-only modem registers fine but can never raise a bearer, so `up` would
+# sit out its whole timeout and fail. Detect the missing control port and reset
+# the modem: the reset drops it off the bus and the re-enumeration makes
+# ModemManager probe every port again, MBIM included.
+has_control_port() {
+  modem_dump "$1" | grep -qE '\((mbim|qmi)\)$'
+}
+
+ensure_control_port() {
+  local idx="$1"
+
+  if has_control_port "$idx"; then
+    printf '%s' "$idx"
+    return 0
+  fi
+  # No cdc-wdm node at all means this modem genuinely is AT-driven — not our
+  # stale-resume case. Leave it alone.
+  if ! compgen -G '/dev/cdc-wdm*' >/dev/null; then
+    printf '%s' "$idx"
+    return 0
+  fi
+
+  log "modem has no MBIM/QMI control port (stale state after resume) — resetting modem"
+  mmcli -m "$idx" --reset >/dev/null 2>&1
+  sleep 3
+  idx=$(wait_for_modem 60) ||
+    die "modem did not come back after reset — try: systemctl restart ModemManager"
+  has_control_port "$idx" ||
+    die "modem still has no control port after reset — try: systemctl restart ModemManager"
+
+  log "modem re-probed with its control port back"
+  printf '%s' "$idx"
+}
+
 select_sim_slot() {
   local idx="$1" want cur
   want=$(cfg SIM_SLOT)
@@ -180,6 +217,8 @@ cmd_up() {
 
   idx=$(wait_for_modem 45) || die "no WWAN modem found (is the card enabled in BIOS?)"
   mmcli -m "$idx" --set-power-state-on >/dev/null 2>&1
+
+  idx=$(ensure_control_port "$idx") || exit 1
 
   new_idx=$(select_sim_slot "$idx")
   [[ -n $new_idx ]] && idx=$new_idx
