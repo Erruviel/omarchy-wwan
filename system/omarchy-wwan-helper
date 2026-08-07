@@ -91,15 +91,29 @@ wait_for_connected() {
 # ModemManager then recreates the modem object without re-probing cdc-wdm0 and
 # is left driving it over AT only ("could not grab port cdc-wdm0" in the log).
 # An AT-only modem registers fine but can never raise a bearer, so `up` would
-# sit out its whole timeout and fail. Detect the missing control port and reset
-# the modem: the reset drops it off the bus and the re-enumeration makes
-# ModemManager probe every port again, MBIM included.
+# sit out its whole timeout and fail.
 has_control_port() {
   modem_dump "$1" | grep -qE '\((mbim|qmi)\)$'
 }
 
+# ModemManager numbers modems monotonically, so after a re-plug the old index
+# never comes back — anything different (and present) is the fresh object.
+# Plain wait_for_modem would return the stale one that has not vanished yet.
+wait_for_new_modem() {
+  local old="$1" deadline=$((SECONDS + ${2:-60})) idx
+  while ((SECONDS < deadline)); do
+    idx=$(modem_index)
+    [[ -n $idx && $idx != "$old" ]] && {
+      printf '%s' "$idx"
+      return 0
+    }
+    sleep 1
+  done
+  return 1
+}
+
 ensure_control_port() {
-  local idx="$1"
+  local idx="$1" dev
 
   if has_control_port "$idx"; then
     printf '%s' "$idx"
@@ -112,13 +126,33 @@ ensure_control_port() {
     return 0
   fi
 
-  log "modem has no MBIM/QMI control port (stale state after resume) — resetting modem"
-  mmcli -m "$idx" --reset >/dev/null 2>&1
-  sleep 3
+  # `mmcli --reset` is no help here: with the control port gone the modem is
+  # AT-only and the plugin reports reset as unsupported. Re-authorizing the
+  # USB device is a soft re-plug instead — every port is torn down, re-added
+  # and re-probed from scratch, MBIM included.
+  dev=$(kv "$(modem_dump "$idx")" modem.generic.device)
+  if [[ -f $dev/authorized ]]; then
+    log "modem has no MBIM/QMI control port (stale state after resume) — re-plugging on USB"
+    echo 0 >"$dev/authorized"
+    sleep 2
+    echo 1 >"$dev/authorized"
+    if idx=$(wait_for_new_modem "$idx" 60) && has_control_port "$idx"; then
+      log "modem re-probed with its control port back"
+      printf '%s' "$idx"
+      return 0
+    fi
+  fi
+
+  # The proven cure: a ModemManager restart re-probes every port. The unit
+  # Wants= rather than Requires= ModemManager precisely so this restart does
+  # not propagate back and kill us mid-run.
+  log "USB re-plug did not restore the control port — restarting ModemManager"
+  systemctl restart ModemManager.service ||
+    die "could not restart ModemManager"
   idx=$(wait_for_modem 60) ||
-    die "modem did not come back after reset — try: systemctl restart ModemManager"
+    die "modem did not come back after ModemManager restart"
   has_control_port "$idx" ||
-    die "modem still has no control port after reset — try: systemctl restart ModemManager"
+    die "modem still has no control port — a full power cycle may be needed"
 
   log "modem re-probed with its control port back"
   printf '%s' "$idx"

@@ -1,7 +1,10 @@
 [Unit]
 Description=Omarchy WWAN (mobile broadband) connection
 Documentation=man:mmcli(1)
-Requires=ModemManager.service
+# Wants= rather than Requires=: the helper restarts ModemManager as a repair
+# of last resort, and with Requires= that restart would propagate back and
+# kill the helper mid-run.
+Wants=ModemManager.service
 After=ModemManager.service systemd-networkd.service
 Wants=network.target
 Before=network-online.target
