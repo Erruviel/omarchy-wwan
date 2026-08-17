@@ -14,7 +14,7 @@
   },
   "barWidget": {
     "displayName": "Mobile Data",
-    "description": "WWAN signal with a popup panel: connect, SIM slot, carrier, autoconnect",
+    "description": "WWAN signal with a popup panel: connect, link stats, data cap, SIM slot, carrier",
     "category": "Network",
     "allowMultiple": false,
     "defaultSection": "right"
