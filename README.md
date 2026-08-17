@@ -108,8 +108,9 @@ Poland, for instance, requires `internet`/`internet`.
 ## Usage
 
 The bar icon opens an anchored control panel, just like the built-in Wi-Fi and battery
-widgets: a connect switch, connection stats, SIM slot picker, carrier setup, and
-autoconnect. Right-click toggles mobile data directly; middle-click refreshes.
+widgets: a connect switch, live connection stats (ping and packet loss measured over the
+modem link itself, current throughput, session totals), SIM slot picker, carrier setup,
+and autoconnect. Right-click toggles mobile data directly; middle-click refreshes.
 
 The same controls are also in the Omarchy menu under **Setup → Mobile**
 (or `omarchy menu summon mobile`) for keyboard-driven use.

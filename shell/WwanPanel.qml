@@ -28,6 +28,24 @@ Panel {
   property bool desired: false
   readonly property bool switchChecked: busy ? desired : connected
 
+  // Throughput and latency, mirroring the first-party network panel: rates
+  // are deltas between successive --verbose samples, and ping keeps a rolling
+  // window in which a timed-out probe counts as a lost packet.
+  property real prevRxBytes: 0
+  property real prevTxBytes: 0
+  property real prevSampleTime: 0
+  property string prevIface: ""
+  property real downloadRate: 0
+  property real uploadRate: 0
+  property var pingSamples: []
+  property real pingLatency: -1
+  property int packetLoss: 0
+  readonly property int pingHistoryWindow: 24
+  readonly property int pingAverageWindow: 5
+  readonly property bool hasPingSamples: pingSamples.length > 0
+  readonly property bool hasTransferStats: info.rx_bytes !== undefined
+  readonly property color urgent: bar && bar.urgent !== undefined ? bar.urgent : "#cc6666"
+
   readonly property string statusText: {
     switch (wwanState) {
     case "connected": return (info.operator || "Connected") + (info.tech ? " · " + info.tech : "")
@@ -43,6 +61,10 @@ Panel {
     if (!statusProc.running) statusProc.running = true
   }
 
+  function refreshDetails() {
+    if (!detailsProc.running) detailsProc.running = true
+  }
+
   function updateInfo(raw) {
     var next = {}
     var lines = String(raw || "").split("\n")
@@ -53,7 +75,83 @@ Panel {
     // Keep the last known state across a transient empty read, so the widget
     // never blinks out while the CLI is briefly unavailable.
     if (Object.keys(next).length === 0) return
+    updateStats(next)
     info = next
+  }
+
+  function updateStats(next) {
+    var iface = next.iface || ""
+    var now = Date.now() / 1000
+
+    if (next.rx_bytes === undefined || iface !== prevIface || prevSampleTime === 0) {
+      // First sample after open, or the modem moved to another interface —
+      // a delta against the old counters would manufacture a spike.
+      downloadRate = 0
+      uploadRate = 0
+    } else {
+      var dt = now - prevSampleTime
+      if (dt > 0) {
+        downloadRate = Math.max(0, (parseFloat(next.rx_bytes) - prevRxBytes) / dt)
+        uploadRate = Math.max(0, (parseFloat(next.tx_bytes) - prevTxBytes) / dt)
+      }
+    }
+    prevIface = iface
+    prevRxBytes = parseFloat(next.rx_bytes || "0")
+    prevTxBytes = parseFloat(next.tx_bytes || "0")
+    prevSampleTime = next.rx_bytes === undefined ? 0 : now
+
+    if (next.ping_ms === undefined) return
+    var v = parseFloat(next.ping_ms)
+    var samples = pingSamples.slice()
+    samples.push(isFinite(v) && v >= 0 ? v : null)
+    while (samples.length > pingHistoryWindow) samples.shift()
+    pingSamples = samples
+
+    var total = 0, count = 0
+    for (var i = Math.max(0, samples.length - pingAverageWindow); i < samples.length; i++) {
+      if (typeof samples[i] === "number") { total += samples[i]; count++ }
+    }
+    pingLatency = count > 0 ? total / count : -1
+
+    var lost = 0
+    for (var j = 0; j < samples.length; j++) if (samples[j] === null) lost++
+    packetLoss = Math.round((lost / samples.length) * 100)
+  }
+
+  function resetStats() {
+    prevSampleTime = 0
+    prevIface = ""
+    downloadRate = 0
+    uploadRate = 0
+    pingSamples = []
+    pingLatency = -1
+    packetLoss = 0
+  }
+
+  function formatBytes(bytes) {
+    var n = Number(bytes)
+    if (!isFinite(n) || n < 0) n = 0
+    if (n < 1024) return Math.round(n) + " B"
+    if (n < 1024 * 1024) return (n / 1024).toFixed(1) + " KB"
+    if (n < 1024 * 1024 * 1024) return (n / (1024 * 1024)).toFixed(1) + " MB"
+    return (n / (1024 * 1024 * 1024)).toFixed(2) + " GB"
+  }
+
+  function formatRate(bytesPerSec) {
+    return formatBytes(bytesPerSec) + "/s"
+  }
+
+  function formatPing(ms) {
+    if (!hasPingSamples) return "--"
+    var v = parseFloat(ms)
+    if (!isFinite(v) || v < 0) return "Timeout"
+    return v.toFixed(v > 0 && v < 10 ? 1 : 0) + " ms"
+  }
+
+  function formatLoss(percent) {
+    if (!hasPingSamples) return "--"
+    var v = parseInt(percent, 10)
+    return (!v || v < 0 ? 0 : v) + "%"
   }
 
   function runAction(cmd) {
@@ -75,7 +173,7 @@ Panel {
     if (root.bar) root.bar.run(cmd)
   }
 
-  onOpenedChanged: if (opened) refresh()
+  onOpenedChanged: if (!opened) resetStats()
 
   visible: hwPresent
   implicitWidth: hwPresent ? button.implicitWidth : 0
@@ -87,21 +185,36 @@ Panel {
     stdout: StdioCollector { waitForEnd: true; onStreamFinished: root.updateInfo(text) }
   }
 
+  // The verbose feed adds byte counters and an interface-bound ping; the ping
+  // can burn its full 1s timeout, so only the open panel pays for it.
   Process {
-    id: actionProc
-    onExited: root.refresh()
+    id: detailsProc
+    command: ["omarchy-wwan", "panel", "--verbose"]
+    stdout: StdioCollector { waitForEnd: true; onStreamFinished: root.updateInfo(text) }
   }
 
+  Process {
+    id: actionProc
+    onExited: root.opened ? root.refreshDetails() : root.refresh()
+  }
+
+  // Background poll for the bar icon; the open panel has its own cadence.
   Timer {
     interval: Math.max(2, root.setting("interval", 10)) * 1000
-    running: true
+    running: !root.opened
     repeat: true
     triggeredOnStart: true
     onTriggered: root.refresh()
   }
 
-  // Tighter cadence while the panel is open, so signal and IP track live.
-  Timer { interval: 3000; running: root.opened; repeat: true; onTriggered: root.refresh() }
+  // Same rhythm as the Wi-Fi panel's stats poll.
+  Timer {
+    interval: 1500
+    running: root.opened
+    repeat: true
+    triggeredOnStart: true
+    onTriggered: root.refreshDetails()
+  }
 
   BarIconButton {
     id: button
@@ -172,6 +285,8 @@ Panel {
         }
 
         // ---------- Connection stats ----------
+        // Same grid as the Wi-Fi panel: label/value pairs in two columns,
+        // ping rows turning urgent as soon as a probe is lost.
         Row {
           visible: root.connected
           width: parent.width
@@ -182,6 +297,13 @@ Panel {
             spacing: Style.spacing.labelGap
             InfoPair { label: "Operator"; value: root.info.operator || "—" }
             InfoPair { label: "Signal"; value: (root.info.signal || "0") + "%" }
+            InfoPair {
+              label: "Ping"
+              value: root.formatPing(root.pingLatency)
+              valueColor: root.packetLoss > 0 ? root.urgent : root.barForeground
+            }
+            InfoPair { label: "Receiving"; value: root.hasTransferStats ? root.formatRate(root.downloadRate) : "--" }
+            InfoPair { label: "Downloaded"; value: root.hasTransferStats ? root.formatBytes(parseFloat(root.info.rx_bytes || "0")) : "--" }
           }
 
           Column {
@@ -189,6 +311,13 @@ Panel {
             spacing: Style.spacing.labelGap
             InfoPair { label: "Technology"; value: root.info.tech || "—" }
             InfoPair { label: "IP"; value: (root.info.ip || "—").split("/")[0] }
+            InfoPair {
+              label: "Packet Loss"
+              value: root.formatLoss(root.packetLoss)
+              valueColor: root.packetLoss > 0 ? root.urgent : root.barForeground
+            }
+            InfoPair { label: "Sending"; value: root.hasTransferStats ? root.formatRate(root.uploadRate) : "--" }
+            InfoPair { label: "Uploaded"; value: root.hasTransferStats ? root.formatBytes(parseFloat(root.info.tx_bytes || "0")) : "--" }
           }
         }
 
@@ -323,6 +452,7 @@ Panel {
   component InfoPair: Row {
     property string label: ""
     property string value: ""
+    property color valueColor: root.barForeground
 
     width: parent.width
     spacing: Style.space(8)
@@ -342,7 +472,7 @@ Panel {
 
     Text {
       text: parent.value
-      color: root.barForeground
+      color: parent.valueColor
       font.family: root.fontFamily
       font.pixelSize: Style.font.bodySmall
     }

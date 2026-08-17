@@ -212,6 +212,23 @@ cmd_panel() {
   else
     printf 'hw=no\n'
   fi
+
+  # Traffic and latency cost real time (the ping alone can burn its full 1s
+  # timeout), so they are opt-in: the open panel polls --verbose, the bar's
+  # background poll stays on the cheap form.
+  if [[ ${1:-} == --verbose && -n $IFACE ]]; then
+    [[ -r /sys/class/net/$IFACE/statistics/rx_bytes ]] &&
+      printf 'rx_bytes=%s\n' "$(cat "/sys/class/net/$IFACE/statistics/rx_bytes")"
+    [[ -r /sys/class/net/$IFACE/statistics/tx_bytes ]] &&
+      printf 'tx_bytes=%s\n' "$(cat "/sys/class/net/$IFACE/statistics/tx_bytes")"
+    # Bind to the modem's interface: the default route is usually Wi-Fi, and
+    # an unbound ping would measure the wrong link entirely. An empty value is
+    # a timeout — the panel counts those as packet loss.
+    if [[ $STATE == connected ]] && command -v ping >/dev/null; then
+      printf 'ping_ms=%s\n' "$(LC_ALL=C ping -n -c 1 -W 1 -I "$IFACE" 1.1.1.1 2>/dev/null |
+        awk -F'time[=<]' '/time[=<]/ { split($2, parts, " "); print parts[1]; exit }')"
+    fi
+  fi
 }
 
 # The privileged half lives in a systemd unit; without it nothing can connect.
@@ -570,7 +587,7 @@ case "${1:-status}" in
 status) cmd_status ;;
 doctor) cmd_doctor ;;
 json | waybar) cmd_json ;;
-panel) cmd_panel ;;
+panel) cmd_panel "${2:-}" ;;
 present) wwan_hw_present ;;
 notify-status) cmd_notify_status ;;
 apn-input) cmd_apn_input ;;
