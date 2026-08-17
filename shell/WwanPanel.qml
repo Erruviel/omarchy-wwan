@@ -46,6 +46,18 @@ Panel {
   readonly property bool hasTransferStats: info.rx_bytes !== undefined
   readonly property color urgent: bar && bar.urgent !== undefined ? bar.urgent : "#cc6666"
 
+  // Data-plan meter, fed by the CLI's persistent usage accounting.
+  readonly property real usedBytes: parseFloat(info.used_bytes || "0")
+  readonly property real limitBytes: parseFloat(info.limit_bytes || "0")
+  readonly property bool limitAck: info.limit_ack === "1"
+  readonly property real usedFraction: limitBytes > 0 ? Math.min(1, usedBytes / limitBytes) : 0
+  readonly property string nextResetLabel: {
+    if (!info.next_reset) return ""
+    var d = new Date(info.next_reset + "T00:00:00")
+    if (isNaN(d.getTime())) return ""
+    return "Resets " + Qt.formatDate(d, "MMM d")
+  }
+
   readonly property string statusText: {
     switch (wwanState) {
     case "connected": return (info.operator || "Connected") + (info.tech ? " · " + info.tech : "")
@@ -318,6 +330,89 @@ Panel {
             }
             InfoPair { label: "Sending"; value: root.hasTransferStats ? root.formatRate(root.uploadRate) : "--" }
             InfoPair { label: "Uploaded"; value: root.hasTransferStats ? root.formatBytes(parseFloat(root.info.tx_bytes || "0")) : "--" }
+          }
+        }
+
+        // ---------- Data plan ----------
+        PanelSeparator { foreground: root.barForeground }
+
+        Column {
+          width: parent.width
+          spacing: Style.space(10)
+
+          Item {
+            width: parent.width
+            implicitHeight: Math.max(planHeader.implicitHeight, planButton.implicitHeight)
+
+            PanelSectionHeader {
+              id: planHeader
+              text: "DATA PLAN"
+              anchors.left: parent.left
+              anchors.verticalCenter: parent.verticalCenter
+              foreground: root.barForeground
+              fontFamily: root.fontFamily
+            }
+
+            Button {
+              id: planButton
+              anchors.right: parent.right
+              anchors.verticalCenter: parent.verticalCenter
+              text: root.limitBytes > 0 ? "Change" : "Set limit"
+              fontSize: Style.font.caption
+              bordered: true
+              foreground: root.barForeground
+              fontFamily: root.fontFamily
+              onClicked: root.runDetached("omarchy-wwan limit-input")
+            }
+          }
+
+          // Usage bar, following the battery panel's progress bar. Turns
+          // urgent at 90% so the cutoff never comes as a surprise.
+          Item {
+            visible: root.limitBytes > 0
+            width: parent.width
+            implicitHeight: Style.space(8)
+
+            Rectangle {
+              id: planTrack
+              anchors.fill: parent
+              radius: height / 2
+              color: Qt.rgba(root.barForeground.r, root.barForeground.g, root.barForeground.b, 0.12)
+            }
+
+            Rectangle {
+              anchors.left: planTrack.left
+              anchors.verticalCenter: planTrack.verticalCenter
+              height: planTrack.height
+              radius: planTrack.radius
+              width: Math.max(planTrack.height, planTrack.width * root.usedFraction)
+              color: root.usedFraction >= 0.9 ? root.urgent : root.barForeground
+              Behavior on width { NumberAnimation { duration: 320; easing.type: Easing.OutCubic } }
+            }
+          }
+
+          Item {
+            width: parent.width
+            implicitHeight: planUsed.implicitHeight
+
+            Text {
+              id: planUsed
+              anchors.left: parent.left
+              text: root.limitBytes > 0
+                ? root.formatBytes(root.usedBytes) + " of " + (root.info.limit || root.formatBytes(root.limitBytes)) + (root.limitAck ? "  ·  cutoff off" : "")
+                : "Used: " + root.formatBytes(root.usedBytes)
+              color: root.usedFraction >= 1 ? root.urgent : root.barForeground
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.bodySmall
+            }
+
+            Text {
+              anchors.right: parent.right
+              text: root.nextResetLabel
+              color: root.dim
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.bodySmall
+            }
           }
         }
 

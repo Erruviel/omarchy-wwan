@@ -105,6 +105,31 @@ one) and *Enter APN manually*.
 Username and password are filled in automatically for carriers that need them — Orange
 Poland, for instance, requires `internet`/`internet`.
 
+## Data limit
+
+Monthly (or daily) cap with auto-cutoff, for plans sold by the gigabyte:
+
+```sh
+omarchy-wwan limit 5G          # cap the billing period at 5 GB
+omarchy-wwan limit day 12      # the package renews on the 12th
+omarchy-wwan limit             # usage, period, next reset
+omarchy-wwan limit reset       # zero the counter (e.g. bought extra data)
+omarchy-wwan limit off         # disable the cutoff (usage is still tracked)
+```
+
+Usage is metered from the interface byte counters into
+`~/.local/state/omarchy-wwan/usage`, so it survives reboots, suspends, and interface
+re-creation. The panel draws a progress bar with the next reset date (urgent color from
+90%), and the same settings are reachable from the panel's *Set limit* button or
+**Setup → Mobile → Data Limit**.
+
+At the limit, mobile data is disconnected with a notification. Reconnecting manually
+while over the limit is honored — the auto-cutoff stands down until the period renews.
+The counter resets itself when the billing period rolls over.
+
+The meter ticks with the bar's status poll (every ~10 s), so a cutoff can overshoot by
+whatever transfers in those few seconds.
+
 ## Usage
 
 The bar icon opens an anchored control panel, just like the built-in Wi-Fi and battery

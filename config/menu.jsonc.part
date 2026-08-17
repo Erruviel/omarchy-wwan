@@ -12,6 +12,7 @@
   "setup.mobile.carrier.detect": {"icon":"󰐷","label":"Detect from SIM","action":"omarchy-launch-floating-terminal-with-presentation 'omarchy-wwan carrier auto && omarchy-wwan apply'"},
   "setup.mobile.carrier.choose": {"icon":"󰇧","label":"Choose country","action":"omarchy-wwan carrier choose"},
   "setup.mobile.carrier.manual": {"icon":"󰑪","label":"Enter APN manually","action":"omarchy-wwan apn-input"},
+  "setup.mobile.limit": {"icon":"󰞯","label":"Data Limit","description":"Cap with auto-cutoff per billing period","action":"omarchy-wwan limit-input"},
   "setup.mobile.autoconnect": {"icon":"󰑓","label":"Autoconnect","checked":"systemctl is-enabled --quiet omarchy-wwan.service","action":"omarchy-wwan autoconnect toggle"},
   "setup.mobile.logs": {"icon":"󰋚","label":"Logs","action":"omarchy-launch-floating-terminal-with-presentation 'omarchy-wwan log'"},
   // <<< omarchy-wwan <<<

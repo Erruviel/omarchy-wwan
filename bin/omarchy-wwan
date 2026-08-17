@@ -10,7 +10,11 @@ set -uo pipefail
 CONFIG="$HOME/.config/omarchy/wwan.conf"
 UNIT=omarchy-wwan.service
 DROPIN=/etc/systemd/network/20-wwan.network.d/10-omarchy-mobile.conf
+# read_state reuses STATE for the modem state, so the directory gets its own
+# name; keep both pointing at the same place.
 STATE="${XDG_STATE_HOME:-$HOME/.local/state}/omarchy-wwan"
+STATE_DIR=$STATE
+USAGE_FILE="$STATE_DIR/usage"
 PLUGIN_DIR="$HOME/.config/omarchy/plugins/erruviel.wwan"
 
 # Where to point the user for repairs: an explicit override, then the shell
@@ -158,6 +162,9 @@ cmd_status() {
 # what the waybar module ate in Omarchy 3, and there was no reason to change.
 cmd_json() {
   read_state
+  # The bar polls this every few seconds, which makes it the data meter's
+  # heartbeat: usage accrues and the limit is enforced on every poll.
+  meter_update
   # Empty text hides the module entirely — but only on machines with no modem.
   # A card that merely has not been probed yet keeps its spot in the bar, or
   # the icon would blink out at every boot and resume.
@@ -172,7 +179,13 @@ cmd_json() {
 
   local tooltip
   case $STATE in
-  disabled) tooltip="Mobile data off" ;;
+  disabled)
+    if ((LIMIT_BYTES > 0 && USED_BYTES >= LIMIT_BYTES)); then
+      tooltip="Data limit reached — mobile data off"
+    else
+      tooltip="Mobile data off"
+    fi
+    ;;
   locked) tooltip="SIM locked — PIN required" ;;
   searching) tooltip="Searching for network" ;;
   registered) tooltip="${OPERATOR:-Registered} — not connected" ;;
@@ -183,11 +196,268 @@ cmd_json() {
     "$(signal_icon)" "$tooltip" "$STATE" "${SIGNAL:-0}"
 }
 
+# ------------------------------------------------------------- data limit
+#
+# Kernel byte counters vanish on reboot and interface re-creation, so usage
+# is accumulated into $USAGE_FILE as deltas between successive samples. The
+# meter runs on every bar poll (~10s), which also makes it the enforcement
+# point: reach the limit and mobile data is cut off with a notification.
+
+# DATA_LIMIT accepts 5G / 1.5G / 500M / 500MB / off. Prints bytes, 0 = off.
+limit_bytes() {
+  local v
+  v=$(get_cfg DATA_LIMIT)
+  [[ -n $v && ${v,,} != off ]] || {
+    echo 0
+    return
+  }
+  awk -v s="$v" 'BEGIN {
+    n = s
+    sub(/[GgMmKk][Bb]?$/, "", n)
+    if (n !~ /^[0-9]+(\.[0-9]+)?$/) { print 0; exit }
+    u = toupper(substr(s, length(n) + 1, 1))
+    m = 0
+    if (u == "G") m = 1024 ^ 3
+    else if (u == "M") m = 1024 ^ 2
+    else if (u == "K") m = 1024
+    printf "%.0f", n * m
+  }'
+}
+
+fmt_bytes() {
+  awk -v n="$1" 'BEGIN {
+    if (n < 1024) printf "%d B", n
+    else if (n < 1024 ^ 2) printf "%.1f KB", n / 1024
+    else if (n < 1024 ^ 3) printf "%.1f MB", n / 1024 ^ 2
+    else printf "%.2f GB", n / 1024 ^ 3
+  }'
+}
+
+# Renewal day 31 in a 30-day month lands on the month's last day.
+clamp_day() { # <YYYY-MM> <day>
+  local dim=$(date -d "$1-01 +1 month -1 day" +%-d) d=$2
+  ((d > dim)) && d=$dim
+  printf '%s-%02d' "$1" "$d"
+}
+
+# Sets PERIOD_START and PERIOD_NEXT (both YYYY-MM-DD) for the current
+# billing period: the day the package renews each month, or midnight for
+# daily plans. ISO dates compare correctly as strings.
+period_bounds() {
+  local period day ym start
+  period=$(get_cfg DATA_PERIOD)
+  if [[ ${period:-monthly} == daily ]]; then
+    PERIOD_START=$(date +%F)
+    PERIOD_NEXT=$(date -d tomorrow +%F)
+    return
+  fi
+  day=$(get_cfg DATA_RESET_DAY)
+  [[ $day =~ ^[0-9]+$ ]] || day=1
+  ((day < 1)) && day=1
+  ((day > 31)) && day=31
+  ym=$(date +%Y-%m)
+  start=$(clamp_day "$ym" "$day")
+  if [[ $(date +%F) < $start ]]; then
+    PERIOD_START=$(clamp_day "$(date -d "$ym-01 -1 month" +%Y-%m)" "$day")
+    PERIOD_NEXT=$start
+  else
+    PERIOD_START=$start
+    PERIOD_NEXT=$(clamp_day "$(date -d "$ym-01 +1 month" +%Y-%m)" "$day")
+  fi
+}
+
+meter_iface() {
+  [[ -n ${IFACE:-} ]] && {
+    echo "$IFACE"
+    return 0
+  }
+  local i
+  for i in /sys/class/net/ww*; do
+    [[ -e $i ]] && {
+      basename "$i"
+      return 0
+    }
+  done
+  return 1
+}
+
+# Accumulate usage and enforce the limit. Sets USED_BYTES, LIMIT_BYTES,
+# LIMIT_ACK. Expects read_state to have run (uses the modem STATE/IFACE).
+meter_update() {
+  local iface cur_rx cur_tx d_rx d_tx have_state=0
+  local u_start="" u_rx=0 u_tx=0 u_lrx=0 u_ltx=0 u_ack=0
+  mkdir -p "$STATE_DIR"
+  period_bounds
+
+  if [[ -r $USAGE_FILE ]]; then
+    have_state=1
+    while IFS='=' read -r k v; do
+      case $k in
+      period_start) u_start=$v ;;
+      rx) u_rx=$v ;;
+      tx) u_tx=$v ;;
+      last_rx) u_lrx=$v ;;
+      last_tx) u_ltx=$v ;;
+      ack) u_ack=$v ;;
+      esac
+    done <"$USAGE_FILE"
+  fi
+
+  # The package renewed: usage starts over, and so does the cutoff. Counter
+  # snapshots are kept — the kernel counters did not reset with the period.
+  if [[ $u_start != "$PERIOD_START" ]]; then
+    u_rx=0 u_tx=0 u_ack=0
+  fi
+
+  if iface=$(meter_iface) && [[ -r /sys/class/net/$iface/statistics/rx_bytes ]]; then
+    cur_rx=$(cat "/sys/class/net/$iface/statistics/rx_bytes")
+    cur_tx=$(cat "/sys/class/net/$iface/statistics/tx_bytes")
+    if ((have_state)); then
+      # A counter below the last snapshot means the netdev was re-created
+      # (reboot, replug, suspend): everything on it is new traffic.
+      ((cur_rx >= u_lrx)) && d_rx=$((cur_rx - u_lrx)) || d_rx=$cur_rx
+      ((cur_tx >= u_ltx)) && d_tx=$((cur_tx - u_ltx)) || d_tx=$cur_tx
+      u_rx=$((u_rx + d_rx))
+      u_tx=$((u_tx + d_tx))
+    fi
+    # First run only snapshots — the counters may hold traffic from before
+    # the meter existed, and charging that would overcount.
+    u_lrx=$cur_rx
+    u_ltx=$cur_tx
+  fi
+
+  printf 'period_start=%s\nrx=%s\ntx=%s\nlast_rx=%s\nlast_tx=%s\nack=%s\n' \
+    "$PERIOD_START" "$u_rx" "$u_tx" "$u_lrx" "$u_ltx" "$u_ack" >"$USAGE_FILE"
+
+  USED_BYTES=$((u_rx + u_tx))
+  LIMIT_BYTES=$(limit_bytes)
+  LIMIT_ACK=$u_ack
+
+  if ((LIMIT_BYTES > 0 && USED_BYTES >= LIMIT_BYTES && LIMIT_ACK == 0)) &&
+    [[ ${STATE:-} == connected ]]; then
+    if systemctl stop "$UNIT" 2>/dev/null; then
+      omarchy-notification-send -g "󰢿" -u critical "Data limit reached" \
+        "Used $(fmt_bytes "$USED_BYTES") of $(fmt_bytes "$LIMIT_BYTES") — mobile data disconnected. Reconnect manually to keep using data this period." 2>/dev/null ||
+        notify "Data limit reached — mobile data disconnected"
+      STATE=disabled
+    fi
+  fi
+}
+
+cmd_limit() {
+  case "${1:-}" in
+  "")
+    read_state
+    meter_update
+    period_bounds
+    if ((LIMIT_BYTES > 0)); then
+      echo "Data limit:  $(get_cfg DATA_LIMIT) ($(fmt_bytes "$LIMIT_BYTES"))"
+    else
+      echo "Data limit:  off"
+    fi
+    echo "Period:      $(get_cfg DATA_PERIOD | grep . || echo monthly), started $PERIOD_START, resets $PERIOD_NEXT"
+    echo "Used:        $(fmt_bytes "$USED_BYTES")"
+    if ((LIMIT_ACK)); then
+      echo "Note:        limit reached and overridden — no auto-cutoff until the period resets"
+    fi
+    ;;
+  off) set_cfg DATA_LIMIT off && echo "Data limit disabled." ;;
+  day)
+    [[ ${2:-} =~ ^[0-9]+$ ]] && ((10#$2 >= 1 && 10#$2 <= 31)) || {
+      echo "usage: omarchy-wwan limit day <1-31>" >&2
+      return 2
+    }
+    set_cfg DATA_RESET_DAY "$2" && echo "Package renews on day $2 of the month."
+    ;;
+  period)
+    [[ ${2:-} == monthly || ${2:-} == daily ]] || {
+      echo "usage: omarchy-wwan limit period {monthly|daily}" >&2
+      return 2
+    }
+    set_cfg DATA_PERIOD "$2" && echo "Billing period set to $2."
+    ;;
+  reset)
+    rm -f "$USAGE_FILE"
+    echo "Usage counter reset."
+    ;;
+  *)
+    if [[ $(limit_bytes_probe "${1:-}") -gt 0 ]]; then
+      set_cfg DATA_LIMIT "$1"
+      echo "Data limit set to $1."
+    else
+      cat >&2 <<'EOF'
+usage: omarchy-wwan limit [command]
+
+  (no args)             show limit, period and usage
+  <size>                set the limit, e.g. 5G, 1.5G, 500M
+  off                   disable the limit (usage is still tracked)
+  day <1-31>            day of the month the package renews
+  period monthly|daily  billing period
+  reset                 zero the usage counter (e.g. after buying extra data)
+EOF
+      return 2
+    fi
+    ;;
+  esac
+}
+
+# Validate a size argument without touching the config.
+limit_bytes_probe() {
+  awk -v s="${1:-}" 'BEGIN {
+    n = s
+    sub(/[GgMmKk][Bb]?$/, "", n)
+    if (n !~ /^[0-9]+(\.[0-9]+)?$/ || n == s) { print 0; exit }
+    u = toupper(substr(s, length(n) + 1, 1))
+    m = 0
+    if (u == "G") m = 1024 ^ 3
+    else if (u == "M") m = 1024 ^ 2
+    else if (u == "K") m = 1024
+    printf "%.0f", n * m
+  }'
+}
+
+# Menu-driven setup: period → size → renewal day, all via the Omarchy menu.
+cmd_limit_input() {
+  local choice size day
+  choice=$(omarchy-menu-select "Data limit" "Monthly limit" "Daily limit" "Turn off limit") || return 0
+  case $choice in
+  "Turn off limit")
+    set_cfg DATA_LIMIT off
+    notify "Data limit disabled"
+    return 0
+    ;;
+  "Monthly limit") set_cfg DATA_PERIOD monthly ;;
+  "Daily limit") set_cfg DATA_PERIOD daily ;;
+  *) return 0 ;;
+  esac
+
+  size=$(omarchy-menu-input "Limit (e.g. 5G or 500M)") || return 0
+  [[ -n $size ]] || return 0
+  if [[ $(limit_bytes_probe "$size") -eq 0 ]]; then
+    notify "Not a valid limit: $size (try 5G or 500M)"
+    return 1
+  fi
+  set_cfg DATA_LIMIT "$size"
+
+  if [[ $choice == "Monthly limit" ]]; then
+    day=$(omarchy-menu-input "Renewal day of month (1-31)") || return 0
+    if [[ $day =~ ^[0-9]+$ ]] && ((10#$day >= 1 && 10#$day <= 31)); then
+      set_cfg DATA_RESET_DAY "$day"
+    elif [[ -n $day ]]; then
+      notify "Renewal day must be 1-31 — kept $(get_cfg DATA_RESET_DAY | grep . || echo 1)"
+    fi
+  fi
+
+  period_bounds
+  notify "Data limit: $size, resets $PERIOD_NEXT"
+}
+
 # Everything the shell panel needs in one process spawn: modem state, config
 # and unit status as key=value lines. Values are single-line by construction
 # (mmcli/config fields), so no quoting is needed.
 cmd_panel() {
   read_state
+  meter_update
   printf 'state=%s\n' "$STATE"
   printf 'operator=%s\n' "$OPERATOR"
   printf 'tech=%s\n' "$TECH"
@@ -212,6 +482,13 @@ cmd_panel() {
   else
     printf 'hw=no\n'
   fi
+
+  printf 'used_bytes=%s\n' "$USED_BYTES"
+  printf 'limit_bytes=%s\n' "$LIMIT_BYTES"
+  printf 'limit=%s\n' "$(get_cfg DATA_LIMIT)"
+  printf 'period=%s\n' "$(get_cfg DATA_PERIOD | grep . || echo monthly)"
+  printf 'next_reset=%s\n' "$PERIOD_NEXT"
+  printf 'limit_ack=%s\n' "$LIMIT_ACK"
 
   # Traffic and latency cost real time (the ping alone can burn its full 1s
   # timeout), so they are opt-in: the open panel polls --verbose, the bar's
@@ -242,6 +519,15 @@ require_system_half() {
 
 cmd_connect() {
   require_system_half || return 1
+  # Connecting while over the limit is a deliberate act: honor it, and stop
+  # the meter from cutting the connection right back off. The override lasts
+  # until the period resets.
+  read_state
+  meter_update
+  if ((LIMIT_BYTES > 0 && USED_BYTES >= LIMIT_BYTES && LIMIT_ACK == 0)); then
+    sed -i 's/^ack=.*/ack=1/' "$USAGE_FILE"
+    notify "Over the data limit ($(fmt_bytes "$USED_BYTES") used) — auto-cutoff disabled until the period resets"
+  fi
   notify "Connecting…"
   if systemctl start "$UNIT"; then
     read_state
@@ -609,6 +895,8 @@ apply)
   systemctl restart "$UNIT"
   ;;
 carrier) cmd_carrier "${2:-}" "${3:-}" "${4:-}" "${5:-}" ;;
+limit) cmd_limit "${2:-}" "${3:-}" ;;
+limit-input) cmd_limit_input ;;
 autoconnect) cmd_autoconnect "${2:-}" ;;
 log) journalctl -u "$UNIT" -n 50 --no-pager ;;
 config) "${EDITOR:-nano}" "$CONFIG" ;;
@@ -623,6 +911,7 @@ usage: omarchy-wwan <command>
   apply               re-read wwan.conf and reconnect
   sim [1|2]           select physical SIM (1) or eSIM (2); bare: show config
   carrier ...         pick country/carrier and apply its APN (see: carrier)
+  limit ...           monthly/daily data cap with auto-cutoff (see: limit)
   apn <name>          set the APN by hand
   autoconnect on|off  connect automatically at boot
   log                 recent connection log
