@@ -448,11 +448,16 @@ Panel {
             width: parent.width
             spacing: Style.space(6)
             readonly property real cellWidth: (width - spacing) / 2
+            // A slot switch is in flight — dim the row so the swallowed
+            // clicks read as "busy", not "broken".
+            opacity: root.busy ? 0.5 : 1
 
             Button {
               width: simRow.cellWidth
               iconText: "󰒧"
-              text: "Physical"
+              text: root.info.slot1_sim === "no" ? "Physical · empty" : "Physical"
+              tooltipText: root.info.slot1_sim === "no" ? "No card in the slot" : ""
+              opacity: root.info.slot1_sim === "no" ? 0.55 : 1
               bordered: true
               active: root.info.slot === "1"
               foreground: root.barForeground
@@ -463,7 +468,9 @@ Panel {
             Button {
               width: simRow.cellWidth
               iconText: "󱤓"
-              text: "eSIM"
+              text: root.info.slot2_sim === "no" ? "eSIM · empty" : "eSIM"
+              tooltipText: root.info.slot2_sim === "no" ? "No profile installed on the eSIM" : ""
+              opacity: root.info.slot2_sim === "no" ? 0.55 : 1
               bordered: true
               active: root.info.slot === "2"
               foreground: root.barForeground

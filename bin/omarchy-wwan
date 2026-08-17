@@ -75,6 +75,7 @@ wwan_hw_present() {
 
 read_state() {
   STATE=absent OPERATOR="" TECH="" SIGNAL=0 IFACE="" IPADDR="" ACTIVE_SLOT=""
+  SLOT1_SIM="" SLOT2_SIM=""
 
   # A soft-blocked radio is a deliberate "off", not a modem that is missing or
   # hunting for a network — and while blocked the modem may vanish from mmcli.
@@ -98,6 +99,14 @@ read_state() {
   local mstate reg
   mstate=$(kv "$dump" modem.generic.state)
   reg=$(kv "$dump" modem.3gpp.registration-state)
+
+  # Which slots actually hold a SIM. An empty slot reports the path "/";
+  # the panel uses this to mark a blank eSIM before anyone clicks it.
+  local p1 p2
+  p1=$(kv "$dump" "modem.generic.sim-slots.value[1]")
+  p2=$(kv "$dump" "modem.generic.sim-slots.value[2]")
+  [[ -n $p1 ]] && { [[ $p1 == / ]] && SLOT1_SIM=no || SLOT1_SIM=yes; }
+  [[ -n $p2 ]] && { [[ $p2 == / ]] && SLOT2_SIM=no || SLOT2_SIM=yes; }
 
   # An empty active SIM slot reports the path "/" — a blank eSIM, typically.
   # The modem then hunts for a network forever, which looks exactly like poor
@@ -495,6 +504,8 @@ cmd_panel() {
   printf 'ip=%s\n' "$IPADDR"
   printf 'icon=%s\n' "$(signal_icon)"
   printf 'active_slot=%s\n' "$ACTIVE_SLOT"
+  printf 'slot1_sim=%s\n' "$SLOT1_SIM"
+  printf 'slot2_sim=%s\n' "$SLOT2_SIM"
   printf 'slot=%s\n' "$(get_cfg SIM_SLOT)"
   printf 'apn=%s\n' "$(get_cfg APN)"
   if systemctl is-enabled --quiet "$UNIT" 2>/dev/null; then
@@ -590,6 +601,27 @@ cmd_sim() {
     return 2
     ;;
   esac
+
+  # Refuse to switch onto a slot with no SIM in it. The modem cannot connect
+  # to anything there, and the attempt would hang the unit (and the panel's
+  # buttons with it) for minutes before failing.
+  local idx spath
+  idx=$(modem_index)
+  if [[ -n $idx ]]; then
+    spath=$(kv "$(mmcli -m "$idx" -K 2>/dev/null)" "modem.generic.sim-slots.value[$slot]")
+    if [[ $spath == / ]]; then
+      if [[ $slot == 2 ]]; then
+        echo "The eSIM (slot 2) is empty — no profile is installed on it. Not switching." >&2
+        echo "Install a profile with an LPA client (e.g. lpac) first." >&2
+        notify "eSIM is empty — no profile installed. Not switching."
+      else
+        echo "SIM slot $slot is empty — insert a card first. Not switching." >&2
+        notify "SIM slot $slot is empty — not switching"
+      fi
+      return 1
+    fi
+  fi
+
   set_cfg SIM_SLOT "$slot"
 
   # SetPrimarySimSlot is not on ModemManager's D-Bus whitelist, so it is
