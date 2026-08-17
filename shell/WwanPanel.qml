@@ -224,7 +224,7 @@ Panel {
 
             Button {
               width: simRow.cellWidth
-              iconText: "󰄜"
+              iconText: "󰒧"
               text: "Physical"
               bordered: true
               active: root.info.slot === "1"
@@ -235,7 +235,7 @@ Panel {
 
             Button {
               width: simRow.cellWidth
-              iconText: "󰗹"
+              iconText: "󱤓"
               text: "eSIM"
               bordered: true
               active: root.info.slot === "2"
