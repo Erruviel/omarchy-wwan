@@ -10,11 +10,11 @@
     "bar-widget"
   ],
   "entryPoints": {
-    "barWidget": "shell/BarWidget.qml"
+    "barWidget": "shell/WwanPanel.qml"
   },
   "barWidget": {
     "displayName": "Mobile Data",
-    "description": "WWAN signal strength; click for the Mobile menu, right-click to toggle",
+    "description": "WWAN signal with a popup panel: connect, SIM slot, carrier, autoconnect",
     "category": "Network",
     "allowMultiple": false,
     "defaultSection": "right"

@@ -87,7 +87,12 @@ else
   say "installing the shell plugin into $PLUGIN_DIR"
   mkdir -p "$PLUGIN_DIR/shell"
   install -m 644 "$REPO/manifest.json" "$PLUGIN_DIR/manifest.json"
-  install -m 644 "$REPO/shell/BarWidget.qml" "$PLUGIN_DIR/shell/BarWidget.qml"
+  install -m 644 "$REPO"/shell/*.qml "$PLUGIN_DIR/shell/"
+  # Entry points renamed across versions leave stale QML behind; keep only
+  # what the repo ships.
+  for f in "$PLUGIN_DIR"/shell/*.qml; do
+    [[ -f "$REPO/shell/$(basename "$f")" ]] || rm -f "$f"
+  done
 fi
 
 omarchy-shell shell rescanPlugins >/dev/null 2>&1 || true

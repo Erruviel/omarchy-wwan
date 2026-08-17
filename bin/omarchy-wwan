@@ -183,6 +183,37 @@ cmd_json() {
     "$(signal_icon)" "$tooltip" "$STATE" "${SIGNAL:-0}"
 }
 
+# Everything the shell panel needs in one process spawn: modem state, config
+# and unit status as key=value lines. Values are single-line by construction
+# (mmcli/config fields), so no quoting is needed.
+cmd_panel() {
+  read_state
+  printf 'state=%s\n' "$STATE"
+  printf 'operator=%s\n' "$OPERATOR"
+  printf 'tech=%s\n' "$TECH"
+  printf 'signal=%s\n' "$SIGNAL"
+  printf 'iface=%s\n' "$IFACE"
+  printf 'ip=%s\n' "$IPADDR"
+  printf 'icon=%s\n' "$(signal_icon)"
+  printf 'slot=%s\n' "$(get_cfg SIM_SLOT)"
+  printf 'apn=%s\n' "$(get_cfg APN)"
+  if systemctl is-enabled --quiet "$UNIT" 2>/dev/null; then
+    printf 'autoconnect=yes\n'
+  else
+    printf 'autoconnect=no\n'
+  fi
+  if systemctl cat "$UNIT" >/dev/null 2>&1; then
+    printf 'installed=yes\n'
+  else
+    printf 'installed=no\n'
+  fi
+  if wwan_hw_present; then
+    printf 'hw=yes\n'
+  else
+    printf 'hw=no\n'
+  fi
+}
+
 # The privileged half lives in a systemd unit; without it nothing can connect.
 require_system_half() {
   systemctl cat "$UNIT" >/dev/null 2>&1 && return 0
@@ -539,6 +570,7 @@ case "${1:-status}" in
 status) cmd_status ;;
 doctor) cmd_doctor ;;
 json | waybar) cmd_json ;;
+panel) cmd_panel ;;
 present) wwan_hw_present ;;
 notify-status) cmd_notify_status ;;
 apn-input) cmd_apn_input ;;
@@ -580,7 +612,8 @@ usage: omarchy-wwan <command>
   doctor              verify the patch is still fully in place
   config              edit ~/.config/omarchy/wwan.conf
   present             exit 0 if WWAN hardware is present (menu visibility)
-  json                JSON status feed for the bar widget
+  json                JSON status feed (waybar format)
+  panel               key=value status feed for the shell panel
 EOF
   exit 2
   ;;

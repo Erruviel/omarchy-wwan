@@ -1,7 +1,8 @@
 # omarchy-wwan
 
 Mobile broadband (WWAN/LTE) support for [Omarchy](https://omarchy.org/), packaged as an
-Omarchy shell plugin: a signal indicator in the bar plus a **Setup → Mobile** menu.
+Omarchy shell plugin: a bar widget with an anchored control panel — connect switch, SIM
+slot, carrier wizard — plus a **Setup → Mobile** menu.
 
 Built and tested on a **Dell Latitude 9430** with the **DW5821e-eSIM Snapdragon X20 LTE**
 modem, Omarchy 4.0 (quattro), systemd 261.
@@ -106,8 +107,12 @@ Poland, for instance, requires `internet`/`internet`.
 
 ## Usage
 
-Omarchy menu → **Setup → Mobile** (or `omarchy menu summon mobile`), or the bar icon:
-left-click opens the menu, right-click toggles mobile data, middle-click refreshes.
+The bar icon opens an anchored control panel, just like the built-in Wi-Fi and battery
+widgets: a connect switch, connection stats, SIM slot picker, carrier setup, and
+autoconnect. Right-click toggles mobile data directly; middle-click refreshes.
+
+The same controls are also in the Omarchy menu under **Setup → Mobile**
+(or `omarchy menu summon mobile`) for keyboard-driven use.
 
 ```
 omarchy-wwan status              modem, operator, signal, IP
@@ -161,7 +166,7 @@ also copied to `~/.local/state/omarchy-wwan/backups/` on first modification.
 | `~/.local/bin/omarchy-launch-wwan` | opens the menu |
 | `~/.local/bin/omarchy-wwan-providers` | reads the carrier database |
 | `~/.config/omarchy/wwan.conf` | APN, SIM slot, PIN, route metric |
-| `~/.config/omarchy/plugins/erruviel.wwan/` | the shell plugin (bar widget) |
+| `~/.config/omarchy/plugins/erruviel.wwan/` | the shell plugin (bar widget + panel) |
 | `~/.config/omarchy/shell.json` | widget placed in `bar.layout` |
 | `~/.config/omarchy/extensions/omarchy-menu.jsonc` | Setup → Mobile entries (marked block) |
 | `~/.config/omarchy/hooks/post-update.d/omarchy-wwan` | post-update check |
