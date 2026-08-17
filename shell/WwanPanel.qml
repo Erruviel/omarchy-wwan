@@ -63,6 +63,9 @@ Panel {
     case "connected": return (info.operator || "Connected") + (info.tech ? " · " + info.tech : "")
     case "registered": return (info.operator || "Registered") + " — not connected"
     case "searching": return "Searching for network"
+    case "nosim": return info.active_slot === "2"
+      ? "eSIM is empty — no profile"
+      : "SIM slot " + (info.active_slot || "?") + " is empty"
     case "locked": return "SIM locked — PIN required"
     case "disabled": return "Mobile data off"
     default: return "Modem starting…"

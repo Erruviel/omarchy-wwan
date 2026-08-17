@@ -74,7 +74,7 @@ wwan_hw_present() {
 }
 
 read_state() {
-  STATE=absent OPERATOR="" TECH="" SIGNAL=0 IFACE="" IPADDR=""
+  STATE=absent OPERATOR="" TECH="" SIGNAL=0 IFACE="" IPADDR="" ACTIVE_SLOT=""
 
   # A soft-blocked radio is a deliberate "off", not a modem that is missing or
   # hunting for a network — and while blocked the modem may vanish from mmcli.
@@ -98,6 +98,20 @@ read_state() {
   local mstate reg
   mstate=$(kv "$dump" modem.generic.state)
   reg=$(kv "$dump" modem.3gpp.registration-state)
+
+  # An empty active SIM slot reports the path "/" — a blank eSIM, typically.
+  # The modem then hunts for a network forever, which looks exactly like poor
+  # coverage; say what is actually wrong instead of "searching".
+  local pslot spath
+  pslot=$(kv "$dump" modem.generic.primary-sim-slot)
+  if [[ $pslot =~ ^[0-9]+$ && $mstate != connected ]]; then
+    spath=$(kv "$dump" "modem.generic.sim-slots.value[$pslot]")
+    if [[ $spath == / ]]; then
+      STATE=nosim
+      ACTIVE_SLOT=$pslot
+      return 0
+    fi
+  fi
 
   case $mstate in
   connected)
@@ -124,7 +138,7 @@ read_state() {
 #   U+F08BE md-signal_cellular_3         full
 signal_icon() {
   case $STATE in
-  absent | disabled | locked | searching) printf '\U000F08BF' ;;
+  absent | disabled | locked | searching | nosim) printf '\U000F08BF' ;;
   *)
     if ((SIGNAL >= 67)); then printf '\U000F08BE'
     elif ((SIGNAL >= 34)); then printf '\U000F08BD'
@@ -143,6 +157,14 @@ cmd_status() {
     return 1
     ;;
   disabled) echo "Mobile data: off" ;;
+  nosim)
+    if [[ $ACTIVE_SLOT == 2 ]]; then
+      echo "Mobile data: the eSIM (slot 2) is empty — no profile is installed on it."
+      echo "  Install one with an LPA client (e.g. lpac), or switch back: omarchy-wwan sim 1"
+    else
+      echo "Mobile data: SIM slot ${ACTIVE_SLOT:-?} is empty — insert a card or switch slots."
+    fi
+    ;;
   locked) echo "Mobile data: SIM locked (PIN required)" ;;
   searching) echo "Mobile data: searching for network (signal ${SIGNAL}%)" ;;
   registered) echo "Mobile data: registered on ${OPERATOR:-unknown}, not connected (signal ${SIGNAL}%)" ;;
@@ -187,6 +209,13 @@ cmd_json() {
     fi
     ;;
   locked) tooltip="SIM locked — PIN required" ;;
+  nosim)
+    if [[ $ACTIVE_SLOT == 2 ]]; then
+      tooltip="eSIM is empty — no profile installed"
+    else
+      tooltip="SIM slot ${ACTIVE_SLOT:-?} is empty"
+    fi
+    ;;
   searching) tooltip="Searching for network" ;;
   registered) tooltip="${OPERATOR:-Registered} — not connected" ;;
   connected) tooltip="${OPERATOR:-Connected}${TECH:+ · $TECH} · ${SIGNAL}%${IPADDR:+\\n$IPADDR}" ;;
@@ -465,6 +494,7 @@ cmd_panel() {
   printf 'iface=%s\n' "$IFACE"
   printf 'ip=%s\n' "$IPADDR"
   printf 'icon=%s\n' "$(signal_icon)"
+  printf 'active_slot=%s\n' "$ACTIVE_SLOT"
   printf 'slot=%s\n' "$(get_cfg SIM_SLOT)"
   printf 'apn=%s\n' "$(get_cfg APN)"
   if systemctl is-enabled --quiet "$UNIT" 2>/dev/null; then
@@ -567,11 +597,28 @@ cmd_sim() {
   # polkit is ever consulted. Let the helper do it from the unit.
   if systemctl cat "$UNIT" >/dev/null 2>&1; then
     echo "Switching to SIM slot $slot (this reconnects the modem)…"
-    systemctl restart "$UNIT" || {
+    if systemctl restart "$UNIT"; then
+      read_state
+      notify "SIM slot $slot active — ${OPERATOR:-connected}"
+      cmd_status
+    else
+      # The slot may well have switched — the *connect* after it is what
+      # failed. An empty slot (blank eSIM) is the usual reason; say that
+      # instead of a generic failure, and notify for panel/menu clicks.
+      read_state
+      if [[ $STATE == nosim ]]; then
+        cmd_status
+        if [[ $ACTIVE_SLOT == 2 ]]; then
+          notify "eSIM is empty — no profile installed. Mobile data stays off until you switch back or install one."
+        else
+          notify "SIM slot ${ACTIVE_SLOT:-$slot} is empty"
+        fi
+        return 1
+      fi
       echo "Slot switch failed — see: omarchy-wwan log" >&2
+      notify "SIM slot switch failed — see: omarchy-wwan log"
       return 1
-    }
-    cmd_status
+    fi
   else
     echo "Saved SIM_SLOT=$slot. Run 'omarchy-wwan apply' to switch."
   fi
