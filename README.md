@@ -1,8 +1,11 @@
 # omarchy-wwan
 
 Mobile broadband (WWAN/LTE) support for [Omarchy](https://omarchy.org/), packaged as an
-Omarchy shell plugin: a bar widget with an anchored control panel — connect switch, SIM
-slot, carrier wizard — plus a **Setup → Mobile** menu.
+Omarchy shell plugin: a bar widget with an anchored control panel — connect switch, live
+link stats, SIM slot, carrier wizard, data cap with auto-cutoff — plus a **Setup →
+Mobile** menu.
+
+![The bar widget and its control panel](preview.png)
 
 Built and tested on a **Dell Latitude 9430** with the **DW5821e-eSIM Snapdragon X20 LTE**
 modem, Omarchy 4.0 (quattro), systemd 261.
@@ -134,8 +137,9 @@ whatever transfers in those few seconds.
 
 The bar icon opens an anchored control panel, just like the built-in Wi-Fi and battery
 widgets: a connect switch, live connection stats (ping and packet loss measured over the
-modem link itself, current throughput, session totals), SIM slot picker, carrier setup,
-and autoconnect. Right-click toggles mobile data directly; middle-click refreshes.
+modem link itself, current throughput, session totals), the data-plan usage bar, SIM slot
+picker, carrier setup, and autoconnect. Right-click toggles mobile data directly;
+middle-click refreshes.
 
 The same controls are also in the Omarchy menu under **Setup → Mobile**
 (or `omarchy menu summon mobile`) for keyboard-driven use.
@@ -144,8 +148,9 @@ The same controls are also in the Omarchy menu under **Setup → Mobile**
 omarchy-wwan status              modem, operator, signal, IP
 omarchy-wwan connect|disconnect  bring mobile data up or down
 omarchy-wwan toggle
-omarchy-wwan sim 1|2             physical card (1) or built-in eSIM (2)
+omarchy-wwan sim [1|2]           physical card (1) or built-in eSIM (2); bare: show config
 omarchy-wwan carrier ...         carrier wizard (see above)
+omarchy-wwan limit ...           data cap with auto-cutoff (see above)
 omarchy-wwan apn <name>          set the APN by hand
 omarchy-wwan apply               re-read the config and reconnect
 omarchy-wwan autoconnect on|off
@@ -179,10 +184,12 @@ Run `omarchy-wwan doctor` yourself any time. If it reports problems, re-run `./i
 ./uninstall.sh --purge    # removes it too
 ```
 
-Edits to shared files are wrapped in `>>> omarchy-wwan >>>` markers, so uninstalling cuts
-out exactly this patch and leaves anything else you put in those files alone. Originals are
-also copied to `~/.local/state/omarchy-wwan/backups/` on first modification.
-`20-wwan.network` and ModemManager are left as they were.
+This removes the shell plugin, takes the widget out of the bar layout in `shell.json`, and
+strips the menu entries. Edits to shared files are wrapped in `>>> omarchy-wwan >>>`
+markers, so uninstalling cuts out exactly this patch and leaves anything else you put in
+those files alone. Originals are also copied to `~/.local/state/omarchy-wwan/backups/` on
+first modification. `20-wwan.network` and ModemManager are left as they were. Leftovers
+from an Omarchy 3 install (waybar module, `menu.sh` block) are cleaned up too.
 
 ## What gets installed where
 
@@ -196,6 +203,7 @@ also copied to `~/.local/state/omarchy-wwan/backups/` on first modification.
 | `~/.config/omarchy/shell.json` | widget placed in `bar.layout` |
 | `~/.config/omarchy/extensions/omarchy-menu.jsonc` | Setup → Mobile entries (marked block) |
 | `~/.config/omarchy/hooks/post-update.d/omarchy-wwan` | post-update check |
+| `~/.local/state/omarchy-wwan/usage` | data-limit meter state |
 | `/usr/local/bin/omarchy-wwan-helper` | privileged operations |
 | `/etc/systemd/system/omarchy-wwan*.service` | connect at boot and after resume |
 | `/etc/systemd/network/20-wwan.network.d/10-omarchy-mobile.conf` | generated `[MobileNetwork]` |
@@ -210,8 +218,8 @@ Two grants, both deliberate:
    ModemManager's stock `allow_active=yes` policy can never match it and every
    `simple-connect` is refused. Without this the modem never connects.
 2. **An active `wheel` session gets modem control and start/stop on the two `omarchy-wwan`
-   units** — so the menu and waybar never raise a password prompt. The systemd grant is
-   scoped to those two unit names.
+   units** — so the panel, menu, and data-limit cutoff never raise a password prompt. The
+   systemd grant is scoped to those two unit names.
 
 ## Gotchas worth knowing
 
