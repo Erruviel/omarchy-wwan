@@ -3,7 +3,7 @@
 #
 # User-facing front end for Omarchy's WWAN support. Read-only queries go
 # straight to ModemManager; anything privileged is delegated to
-# omarchy-wwan.service (see ~/.config/omarchy/wwan/).
+# omarchy-wwan.service.
 
 set -uo pipefail
 
@@ -11,15 +11,17 @@ CONFIG="$HOME/.config/omarchy/wwan.conf"
 UNIT=omarchy-wwan.service
 DROPIN=/etc/systemd/network/20-wwan.network.d/10-omarchy-mobile.conf
 STATE="${XDG_STATE_HOME:-$HOME/.local/state}/omarchy-wwan"
-REPO_HINT="${OMARCHY_WWAN_REPO:-$HOME/Projects/omarchy-wwan}"
+PLUGIN_DIR="$HOME/.config/omarchy/plugins/erruviel.wwan"
 
-# Fingerprint of the upstream Setup menu we forked. Recorded at install time so
-# `doctor` can tell when an Omarchy update moved out from under our override.
-upstream_setup_menu_hash() {
-  local src="$HOME/.local/share/omarchy/bin/omarchy-menu"
-  [[ -r $src ]] || return 1
-  awk '/^show_setup_menu\(\) \{/, /^\}/' "$src" | sha256sum | cut -d' ' -f1
-}
+# Where to point the user for repairs: an explicit override, then the shell
+# plugin copy (what `omarchy plugin add` leaves behind), then the dev checkout.
+if [[ -n ${OMARCHY_WWAN_REPO:-} ]]; then
+  REPO_HINT=$OMARCHY_WWAN_REPO
+elif [[ -x $PLUGIN_DIR/install.sh ]]; then
+  REPO_HINT=$PLUGIN_DIR
+else
+  REPO_HINT="$HOME/Projects/omarchy-wwan"
+fi
 
 kv() {
   awk -v key="$2" -F: '
@@ -151,7 +153,10 @@ cmd_status() {
   return 0
 }
 
-cmd_waybar() {
+# Waybar-style JSON status: {text, tooltip, class, percentage}. Consumed by
+# the shell bar widget (shell/BarWidget.qml); the format predates it — it is
+# what the waybar module ate in Omarchy 3, and there was no reason to change.
+cmd_json() {
   read_state
   # Empty text hides the module entirely — but only on machines with no modem.
   # A card that merely has not been probed yet keeps its spot in the bar, or
@@ -182,8 +187,8 @@ cmd_waybar() {
 require_system_half() {
   systemctl cat "$UNIT" >/dev/null 2>&1 && return 0
   echo "The system-side WWAN support is not installed yet." >&2
-  echo "Run once:  sudo ~/.config/omarchy/wwan/install.sh" >&2
-  notify "Not installed — run: sudo ~/.config/omarchy/wwan/install.sh"
+  echo "Run once:  $REPO_HINT/install.sh" >&2
+  notify "Not installed — run: $REPO_HINT/install.sh"
   return 1
 }
 
@@ -211,10 +216,13 @@ cmd_toggle() {
 cmd_sim() {
   local slot="${1:-}"
   case $slot in
+  # Bare `sim` prints the configured slot — the menu's ✓ marks read this, so
+  # it must stay cheap (no mmcli round-trip).
+  "") get_cfg SIM_SLOT; return 0 ;;
   1 | physical) slot=1 ;;
   2 | esim) slot=2 ;;
   *)
-    echo "usage: omarchy-wwan sim {1|2}   (1 = physical card, 2 = eSIM)" >&2
+    echo "usage: omarchy-wwan sim [1|2]   (1 = physical card, 2 = eSIM)" >&2
     return 2
     ;;
   esac
@@ -286,9 +294,87 @@ carrier_auto() {
   carrier_write "$value" "$label" "$user" "$password" "$provider"
 }
 
+# Apply the config and report via notifications — the menu-driven flows run
+# detached from any terminal, so stdout has nowhere to go.
+apply_gui() {
+  if ! systemctl cat "$UNIT" >/dev/null 2>&1; then
+    notify "Saved. System side not installed — run: $REPO_HINT/install.sh"
+    return 1
+  fi
+  notify "Applying carrier settings…"
+  if systemctl restart "$UNIT"; then
+    read_state
+    notify "Connected to ${OPERATOR:-mobile network}"
+  else
+    notify "Reconnect failed — see: omarchy-wwan log"
+    return 1
+  fi
+}
+
+# Country → carrier → APN picker built on the Omarchy menu (quattro's
+# omarchy-menu-select). Replaces the walker-based wizard from Omarchy 3.
+carrier_choose() {
+  local rows country cc provider apn_rows row choice
+  rows=$(omarchy-wwan-providers countries) || return 1
+
+  local names=()
+  mapfile -t names < <(cut -f2 <<<"$rows")
+  country=$(omarchy-menu-select "Country" "${names[@]}" -- --width 400) || return 0
+  [[ -n $country ]] || return 0
+  cc=$(awk -F'\t' -v n="$country" '$2 == n { print $1; exit }' <<<"$rows")
+
+  local provs=()
+  mapfile -t provs < <(omarchy-wwan-providers providers "$cc")
+  ((${#provs[@]})) || return 1
+  provider=$(omarchy-menu-select "Carrier in $country" "${provs[@]}" -- --width 400) || return 0
+  [[ -n $provider ]] || return 0
+
+  apn_rows=$(omarchy-wwan-providers apns "$cc" "$provider")
+  if [[ -z $apn_rows ]]; then
+    notify "$provider has no data APN in the database"
+    return 1
+  fi
+
+  # Most carriers publish exactly one data APN — do not make the user confirm it.
+  if [[ $(wc -l <<<"$apn_rows") -eq 1 ]]; then
+    row=$apn_rows
+  else
+    local opts=()
+    mapfile -t opts < <(awk -F'\t' '{ print ($2 == "" ? $1 : $1 "  —  " $2) }' <<<"$apn_rows")
+    choice=$(omarchy-menu-select "APN for $provider" "${opts[@]}" -- --width 500) || return 0
+    [[ -n $choice ]] || return 0
+    row=$(awk -F'\t' -v v="${choice%%  —  *}" '$1 == v { print; exit }' <<<"$apn_rows")
+  fi
+
+  local value label user password
+  IFS=$'\t' read -r value label user password <<<"$row"
+  set_cfg APN "$value"
+  set_cfg APN_USER "$user"
+  set_cfg APN_PASS "$password"
+  notify "Carrier set: $provider — APN $value"
+  apply_gui
+}
+
+cmd_apn_input() {
+  local apn
+  apn=$(omarchy-menu-input "APN") || return 0
+  [[ -n $apn ]] || return 0
+  set_cfg APN "$apn"
+  notify "APN set to $apn"
+  apply_gui
+}
+
+cmd_notify_status() {
+  local body
+  body=$(cmd_status 2>&1)
+  omarchy-notification-send -g "󰢾" "Mobile data" "$body" 2>/dev/null ||
+    notify "$body"
+}
+
 cmd_carrier() {
   case "${1:-}" in
   auto | detect) carrier_auto ;;
+  choose) carrier_choose ;;
   list)
     if [[ -z ${2:-} ]]; then
       $PROVIDERS countries
@@ -324,6 +410,7 @@ cmd_carrier() {
 usage: omarchy-wwan carrier <command>
 
   auto                          detect the carrier from the SIM and set its APN
+  choose                        pick country/carrier/APN via the Omarchy menu
   list                          list countries
   list <cc>                     list carriers in that country
   list <cc> <provider>          list that carrier's data APNs
@@ -349,15 +436,21 @@ cmd_autoconnect() {
     set_cfg AUTOCONNECT no
     systemctl disable "$UNIT" && echo "Autoconnect disabled."
     ;;
+  toggle)
+    if systemctl is-enabled --quiet "$UNIT" 2>/dev/null; then
+      cmd_autoconnect off && notify "Autoconnect disabled"
+    else
+      cmd_autoconnect on && notify "Autoconnect enabled"
+    fi
+    ;;
   *)
     systemctl is-enabled "$UNIT"
     ;;
   esac
 }
 
-# Verifies every piece the installer put in place. An Omarchy update can quietly
-# undo some of them — `omarchy refresh waybar` drops the module, and upstream
-# edits to the Setup menu leave our override stale — so this is what the
+# Verifies every piece the installer put in place. An Omarchy update or an
+# `omarchy refresh shell` can quietly undo some of them, so this is what the
 # post-update hook runs. Exits non-zero when anything needs attention.
 cmd_doctor() {
   local problems=0
@@ -378,9 +471,17 @@ cmd_doctor() {
   check "omarchy-wwan on PATH" "$(command -v omarchy-wwan >/dev/null && echo ok || echo no)"
   check "omarchy-launch-wwan on PATH" "$(command -v omarchy-launch-wwan >/dev/null && echo ok || echo no)"
   check "config $CONFIG" "$(present "$CONFIG")"
-  check "menu entry" "$(contains "$HOME/.config/omarchy/extensions/menu.sh" 'omarchy-wwan')"
-  check "waybar module" "$(contains "$HOME/.config/waybar/config.jsonc" 'custom/wwan')"
-  check "waybar style" "$(contains "$HOME/.config/waybar/style.css" 'custom-wwan')"
+  check "shell plugin installed" "$(present "$PLUGIN_DIR/manifest.json")"
+
+  # The widget only shows up if the user's shell.json places it in a bar
+  # section. `omarchy refresh shell` resets that file to stock, which is
+  # exactly the kind of quiet loss this check exists to catch.
+  local in_bar=no
+  jq -e '[.bar.layout[]?[]? | select(.id == "erruviel.wwan")] | length > 0' \
+    "$HOME/.config/omarchy/shell.json" >/dev/null 2>&1 && in_bar=ok
+  check "widget in the bar layout" "$in_bar"
+
+  check "menu entries" "$(contains "$HOME/.config/omarchy/extensions/omarchy-menu.jsonc" 'omarchy-wwan')"
   check "post-update hook" "$(present "$HOME/.config/omarchy/hooks/post-update.d/omarchy-wwan")"
 
   echo "system side:"
@@ -421,18 +522,6 @@ cmd_doctor() {
     check "SIM slot matches the config" ok
   fi
 
-  echo "upstream drift:"
-  local now ref
-  now=$(upstream_setup_menu_hash)
-  ref=$(cat "$STATE/upstream-setup-menu.sha" 2>/dev/null)
-  if [[ -z $ref ]]; then
-    check "Setup menu baseline recorded" no
-  elif [[ $now == "$ref" ]]; then
-    check "Setup menu matches the version we forked" ok
-  else
-    check "Setup menu changed upstream — our copy may be missing new entries" no
-  fi
-
   if ((problems)); then
     echo
     echo "$problems item(s) need attention."
@@ -449,7 +538,10 @@ cmd_doctor() {
 case "${1:-status}" in
 status) cmd_status ;;
 doctor) cmd_doctor ;;
-waybar) cmd_waybar ;;
+json | waybar) cmd_json ;;
+present) wwan_hw_present ;;
+notify-status) cmd_notify_status ;;
+apn-input) cmd_apn_input ;;
 connect | up) cmd_connect ;;
 disconnect | down) cmd_disconnect ;;
 toggle) cmd_toggle ;;
@@ -480,14 +572,15 @@ usage: omarchy-wwan <command>
   toggle              connect if down, disconnect if up
   restart             reconnect
   apply               re-read wwan.conf and reconnect
-  sim {1|2}           select physical SIM (1) or eSIM (2)
+  sim [1|2]           select physical SIM (1) or eSIM (2); bare: show config
   carrier ...         pick country/carrier and apply its APN (see: carrier)
   apn <name>          set the APN by hand
   autoconnect on|off  connect automatically at boot
   log                 recent connection log
   doctor              verify the patch is still fully in place
   config              edit ~/.config/omarchy/wwan.conf
-  waybar              JSON status for the waybar module
+  present             exit 0 if WWAN hardware is present (menu visibility)
+  json                JSON status feed for the bar widget
 EOF
   exit 2
   ;;

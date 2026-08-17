@@ -61,11 +61,47 @@ rm -f "$HOME/.local/bin/omarchy-wwan" \
 say "removing the post-update check"
 rm -f "$HOME/.config/omarchy/hooks/post-update.d/omarchy-wwan"
 
-strip_block "$HOME/.config/omarchy/extensions/menu.sh" "menu"
-strip_block "$HOME/.config/waybar/config.jsonc" "waybar module"
-strip_block "$HOME/.config/waybar/style.css" "waybar style"
+# ---------------------------------------------------------------- shell plugin
 
-# The module name in modules-right sits outside the marked block.
+PLUGIN_DIR="$HOME/.config/omarchy/plugins/erruviel.wwan"
+SHELL_JSON="$HOME/.config/omarchy/shell.json"
+
+# Take the widget out of the bar layout before deleting its code, or the shell
+# logs a missing-plugin warning on every reload until the user cleans up.
+if [[ -f $SHELL_JSON ]] && grep -q 'erruviel\.wwan' "$SHELL_JSON"; then
+  say "removing the widget from the bar layout"
+  tmp=$(mktemp)
+  if jq '
+    if (.bar.layout? | type) == "object" then
+      .bar.layout |= with_entries(
+        .value |= (if type == "array" then map(select(.id != "erruviel.wwan")) else . end)
+      )
+    else . end
+    | if (.plugins? | type) == "array" then
+        .plugins |= map(select((.id? // .) != "erruviel.wwan"))
+      else . end
+  ' "$SHELL_JSON" >"$tmp"; then
+    mv "$tmp" "$SHELL_JSON"
+  else
+    rm -f "$tmp"
+    echo "   warning: could not edit $SHELL_JSON — remove erruviel.wwan by hand" >&2
+  fi
+fi
+
+if [[ -d $PLUGIN_DIR ]]; then
+  say "removing the shell plugin"
+  rm -rf "$PLUGIN_DIR"
+fi
+omarchy-shell shell rescanPlugins >/dev/null 2>&1 || true
+
+# ----------------------------------------------------------------- menu blocks
+
+strip_block "$HOME/.config/omarchy/extensions/omarchy-menu.jsonc" "menu"
+
+# Leftovers from a pre-quattro (waybar/walker) install of this repo.
+strip_block "$HOME/.config/omarchy/extensions/menu.sh" "legacy menu"
+strip_block "$HOME/.config/waybar/config.jsonc" "legacy waybar module"
+strip_block "$HOME/.config/waybar/style.css" "legacy waybar style"
 if [[ -f $HOME/.config/waybar/config.jsonc ]]; then
   sed -i '/^[[:space:]]*"custom\/wwan",[[:space:]]*$/d' "$HOME/.config/waybar/config.jsonc"
 fi
@@ -77,11 +113,6 @@ if [[ $PURGE == yes ]]; then
 else
   say "keeping $CONFIG (use --purge to remove it)"
   [[ -d $STATE/backups ]] && say "original files kept in $STATE/backups"
-fi
-
-if command -v omarchy >/dev/null; then
-  say "restarting waybar"
-  omarchy restart waybar >/dev/null 2>&1 || true
 fi
 
 echo

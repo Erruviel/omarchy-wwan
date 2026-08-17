@@ -1,0 +1,22 @@
+{
+  "schemaVersion": 1,
+  "id": "erruviel.wwan",
+  "name": "Mobile Data",
+  "version": "2.0.0",
+  "author": "Erruviel",
+  "license": "MIT",
+  "description": "Mobile broadband (WWAN/LTE) indicator and controls for Omarchy",
+  "kinds": [
+    "bar-widget"
+  ],
+  "entryPoints": {
+    "barWidget": "shell/BarWidget.qml"
+  },
+  "barWidget": {
+    "displayName": "Mobile Data",
+    "description": "WWAN signal strength; click for the Mobile menu, right-click to toggle",
+    "category": "Network",
+    "allowMultiple": false,
+    "defaultSection": "right"
+  }
+}

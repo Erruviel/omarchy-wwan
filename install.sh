@@ -76,74 +76,72 @@ else
   install -m 600 "$REPO/config/wwan.conf" "$CONFIG"
 fi
 
-# ---------------------------------------------------------------- menu entry
+# --------------------------------------------------------------- shell plugin
 
-MENU="$HOME/.config/omarchy/extensions/menu.sh"
+PLUGIN_DIR="$HOME/.config/omarchy/plugins/erruviel.wwan"
+
+if [[ $REPO == "$PLUGIN_DIR" ]]; then
+  # Installed via `omarchy plugin add` — the repo already is the plugin.
+  say "shell plugin already in place ($PLUGIN_DIR)"
+else
+  say "installing the shell plugin into $PLUGIN_DIR"
+  mkdir -p "$PLUGIN_DIR/shell"
+  install -m 644 "$REPO/manifest.json" "$PLUGIN_DIR/manifest.json"
+  install -m 644 "$REPO/shell/BarWidget.qml" "$PLUGIN_DIR/shell/BarWidget.qml"
+fi
+
+omarchy-shell shell rescanPlugins >/dev/null 2>&1 || true
+
+# Put the widget in the bar next to the Wi-Fi indicator — but only when it is
+# not already placed, so re-running the installer never duplicates or moves it.
+SHELL_JSON="$HOME/.config/omarchy/shell.json"
+if ! jq -e '[.bar.layout[]?[]? | select(.id == "erruviel.wwan")] | length > 0' \
+  "$SHELL_JSON" >/dev/null 2>&1; then
+  say "enabling the bar widget"
+  if omarchy-plugin-enable erruviel.wwan --section right; then
+    # Sit next to the Wi-Fi indicator, like the old waybar module did. The
+    # placement flag on `plugin enable` does not land reliably; `bar move` does.
+    omarchy-bar move erruviel.wwan --before omarchy.network >/dev/null 2>&1 || true
+  else
+    echo "   warning: could not enable the widget — run: omarchy plugin enable erruviel.wwan"
+  fi
+fi
+
+# ---------------------------------------------------------------- menu entries
+
+MENU="$HOME/.config/omarchy/extensions/omarchy-menu.jsonc"
 mkdir -p "$(dirname "$MENU")"
-[[ -f $MENU ]] || : >"$MENU"
+[[ -f $MENU ]] || printf '{\n}\n' >"$MENU"
 
-say "installing the Mobile entry in the Omarchy menu"
+say "installing the Setup → Mobile menu entries"
 backup_once "$MENU"
 strip_block "$MENU"
-cat "$REPO/config/menu.sh.part" >>"$MENU"
+# Insert right after the opening brace: our block's rows all end in commas, so
+# leading the object keeps the file valid whether or not the user's own last
+# entry has a trailing comma (JSONC tolerates a trailing one either way).
+python3 - "$MENU" "$REPO/config/menu.jsonc.part" <<'PY'
+import sys
 
-# Record which upstream Setup menu we forked, so `doctor` can detect drift.
-mkdir -p "$STATE"
-if [[ -r $HOME/.local/share/omarchy/bin/omarchy-menu ]]; then
-  awk '/^show_setup_menu\(\) \{/, /^\}/' "$HOME/.local/share/omarchy/bin/omarchy-menu" |
-    sha256sum | cut -d' ' -f1 >"$STATE/upstream-setup-menu.sha"
-fi
-
-# --------------------------------------------------------------------- waybar
-
-WB="$HOME/.config/waybar/config.jsonc"
-CSS="$HOME/.config/waybar/style.css"
-
-if [[ -f $WB ]]; then
-  say "installing the waybar module"
-  backup_once "$WB"
-  strip_block "$WB"
-  # The entry in modules-right lives outside the marked block.
-  sed -i '/^[[:space:]]*"custom\/wwan",[[:space:]]*$/d' "$WB"
-  MODULE_FILE="$REPO/config/waybar-module.jsonc" python3 - "$WB" <<'PY'
-import os, sys
-
-path = sys.argv[1]
-block = open(os.environ["MODULE_FILE"]).read()
-lines = open(path).read().splitlines(keepends=True)
-out, placed_entry, placed_block = [], False, False
-
-for line in lines:
-    # Sit next to the Wi-Fi indicator in the right-hand module list.
-    if not placed_entry and line.strip() == '"network",':
-        out.append('    "custom/wwan",\n')
-        placed_entry = True
-    out.append(line)
-    # Module definitions are plain object keys; order does not matter, so the
-    # top of the object is the one anchor that cannot drift.
-    if not placed_block and line.lstrip().startswith("{"):
-        out.append(block)
-        placed_block = True
-
-if not placed_block:
-    sys.exit("could not find the opening brace of the waybar config")
-if not placed_entry:
-    print("   warning: no \"network\" entry in modules-right; module defined but not shown")
-
-open(path, "w").write("".join(out))
+path, part = sys.argv[1], sys.argv[2]
+s = open(path).read()
+block = open(part).read()
+i = s.find("{")
+if i < 0:
+    sys.exit(f"no opening brace in {path}")
+s = s[: i + 1] + "\n" + block + s[i + 1 :]
+open(path, "w").write(s)
 PY
-else
-  echo "   warning: $WB not found, skipping waybar module"
-fi
 
-if [[ -f $CSS ]]; then
-  say "installing the waybar style"
-  backup_once "$CSS"
-  strip_block "$CSS"
-  cat "$REPO/config/waybar-style.css" >>"$CSS"
-else
-  echo "   warning: $CSS not found, skipping waybar style"
-fi
+# --------------------------------------------------- leftovers from Omarchy 3
+
+# Pre-quattro installs patched waybar and the walker menu. Those files are
+# ignored by Omarchy 4, but leaving our blocks in them would only confuse.
+strip_block "$HOME/.config/omarchy/extensions/menu.sh"
+strip_block "$HOME/.config/waybar/config.jsonc"
+strip_block "$HOME/.config/waybar/style.css"
+[[ -f $HOME/.config/waybar/config.jsonc ]] &&
+  sed -i '/^[[:space:]]*"custom\/wwan",[[:space:]]*$/d' "$HOME/.config/waybar/config.jsonc"
+rm -f "$STATE/upstream-setup-menu.sha"
 
 # ----------------------------------------------------------------- update hook
 
@@ -164,11 +162,6 @@ else
 fi
 
 # ---------------------------------------------------------------------- finish
-
-if command -v omarchy >/dev/null; then
-  say "restarting waybar"
-  omarchy restart waybar >/dev/null 2>&1 || true
-fi
 
 echo
 echo "Done. Connect with:  omarchy-wwan connect"

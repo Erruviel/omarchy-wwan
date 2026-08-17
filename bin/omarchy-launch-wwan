@@ -2,4 +2,4 @@
 
 # omarchy:summary=Launch the Omarchy mobile broadband (WWAN) controls.
 
-exec omarchy-menu mobile
+exec omarchy-menu summon setup.mobile

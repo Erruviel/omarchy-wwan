@@ -1,0 +1,17 @@
+  // >>> omarchy-wwan >>>
+  // Managed by omarchy-wwan — do not edit between the markers; the installer
+  // replaces this block wholesale. Remove with: uninstall.sh
+  "setup.mobile": {"icon":"󰢾","label":"Mobile","aliases":["mobile","wwan"],"when":"omarchy-wwan present"},
+  "setup.mobile.connect": {"icon":"󰢾","label":"Connect","when":"! systemctl is-active --quiet omarchy-wwan.service","action":"omarchy-launch-floating-terminal-with-presentation 'omarchy-wwan connect'"},
+  "setup.mobile.disconnect": {"icon":"󰢿","label":"Disconnect","when":"systemctl is-active --quiet omarchy-wwan.service","action":"omarchy-wwan disconnect"},
+  "setup.mobile.status": {"icon":"󰋼","label":"Status","action":"omarchy-wwan notify-status"},
+  "setup.mobile.sim": {"icon":"󱂆","label":"SIM Card"},
+  "setup.mobile.sim.physical": {"icon":"󰄜","label":"Physical SIM card","checked":"[[ $(omarchy-wwan sim) == 1 ]]","action":"omarchy-wwan sim 1"},
+  "setup.mobile.sim.esim": {"icon":"󰗹","label":"Built-in eSIM","checked":"[[ $(omarchy-wwan sim) == 2 ]]","action":"omarchy-wwan sim 2"},
+  "setup.mobile.carrier": {"icon":"󰄙","label":"Carrier"},
+  "setup.mobile.carrier.detect": {"icon":"󰐷","label":"Detect from SIM","action":"omarchy-launch-floating-terminal-with-presentation 'omarchy-wwan carrier auto && omarchy-wwan apply'"},
+  "setup.mobile.carrier.choose": {"icon":"󰇧","label":"Choose country","action":"omarchy-wwan carrier choose"},
+  "setup.mobile.carrier.manual": {"icon":"󰑪","label":"Enter APN manually","action":"omarchy-wwan apn-input"},
+  "setup.mobile.autoconnect": {"icon":"󰑓","label":"Autoconnect","checked":"systemctl is-enabled --quiet omarchy-wwan.service","action":"omarchy-wwan autoconnect toggle"},
+  "setup.mobile.logs": {"icon":"󰋚","label":"Logs","action":"omarchy-launch-floating-terminal-with-presentation 'omarchy-wwan log'"},
+  // <<< omarchy-wwan <<<

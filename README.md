@@ -1,13 +1,16 @@
 # omarchy-wwan
 
-Mobile broadband (WWAN/LTE) support for [Omarchy](https://omarchy.org/), with a menu
-entry and a waybar indicator.
+Mobile broadband (WWAN/LTE) support for [Omarchy](https://omarchy.org/), packaged as an
+Omarchy shell plugin: a signal indicator in the bar plus a **Setup → Mobile** menu.
 
 Built and tested on a **Dell Latitude 9430** with the **DW5821e-eSIM Snapdragon X20 LTE**
-modem, Omarchy 3.8.4, systemd 261.
+modem, Omarchy 4.0 (quattro), systemd 261.
 
 ## Requirements
 
+- **Omarchy 4.0 (quattro) or newer** — the bar widget and menu entries plug into the
+  Quickshell-based omarchy-shell. (The last waybar/walker version for Omarchy 3 is in this
+  repo's history.)
 - **systemd 260 or newer** — the `[MobileNetwork]` section this is built on does not exist
   before that, and without it nothing will establish a connection.
 - ModemManager, and `mobile-broadband-provider-info` for the carrier wizard. Both ship with
@@ -44,14 +47,25 @@ back. `ROUTE_METRIC` in the config is the single knob controlling this.
 
 ## Install
 
+The repo is itself a valid Omarchy plugin, so the plugin manager can fetch it:
+
 ```sh
-git clone <this repo> ~/Projects/omarchy-wwan
+omarchy plugin add https://github.com/Erruviel/omarchy-wwan.git
+~/.config/omarchy/plugins/erruviel.wwan/install.sh
+```
+
+Or from a checkout (the installer copies the plugin files into place itself):
+
+```sh
+git clone https://github.com/Erruviel/omarchy-wwan.git ~/Projects/omarchy-wwan
 cd ~/Projects/omarchy-wwan
 ./install.sh
 ```
 
-Run it as your normal user — it uses `sudo` only for the system-side pieces. It is
-idempotent, so re-running it is also the repair command.
+Either way `install.sh` does the rest: the CLI, the bar widget (enabled next to the Wi-Fi
+indicator), the menu entries, the post-update check, and — via `sudo` — the system-side
+pieces. Run it as your normal user. It is idempotent, so re-running it is also the repair
+command.
 
 To repair only the desktop integration on a machine where the system half is already in
 place, and skip the password prompt:
@@ -80,6 +94,7 @@ omarchy-wwan carrier list                  # 154 countries
 omarchy-wwan carrier list pl               # carriers in Poland
 omarchy-wwan carrier list pl Orange        # that carrier's data APNs
 omarchy-wwan carrier set pl Orange         # apply APN, username and password
+omarchy-wwan carrier choose                # the same, as Omarchy menu pickers
 ```
 
 From the desktop: **Setup → Mobile → Carrier**, offering *Detect from SIM*,
@@ -91,8 +106,8 @@ Poland, for instance, requires `internet`/`internet`.
 
 ## Usage
 
-Omarchy menu → **Setup → Mobile**, or the waybar icon (click for the menu, right-click to
-toggle).
+Omarchy menu → **Setup → Mobile** (or `omarchy menu summon mobile`), or the bar icon:
+left-click opens the menu, right-click toggles mobile data, middle-click refreshes.
 
 ```
 omarchy-wwan status              modem, operator, signal, IP
@@ -112,17 +127,17 @@ stays off until you connect again.
 
 ## Surviving Omarchy updates
 
-Nothing here is written into `~/.local/share/omarchy/`, so `omarchy update` cannot
-overwrite it. Two things can still come loose:
+Everything lives in user config or `/etc`, so `omarchy update` cannot overwrite it. The
+menu entries are plain JSONC extensions and the widget is a regular plugin — nothing forks
+upstream code anymore, so there is no drift to worry about. Two things can still come
+loose:
 
-- `omarchy refresh waybar` resets the waybar config and drops the module.
-- An upstream change to the Setup menu leaves this repo's `show_setup_menu` override stale,
-  so newly added upstream entries would not appear.
+- `omarchy refresh shell` resets `shell.json` and drops the widget from the bar layout.
+- Refreshing `extensions/omarchy-menu.jsonc` loses the Setup → Mobile entries.
 
 A hook installed at `~/.config/omarchy/hooks/post-update.d/omarchy-wwan` runs
 `omarchy-wwan doctor` after every `omarchy update` and sends a desktop notification if
-anything needs attention. `install.sh` records a fingerprint of the upstream Setup menu at
-install time, which is how the drift check works.
+anything needs attention.
 
 Run `omarchy-wwan doctor` yourself any time. If it reports problems, re-run `./install.sh`.
 
@@ -142,12 +157,13 @@ also copied to `~/.local/state/omarchy-wwan/backups/` on first modification.
 
 | Path | Purpose |
 | --- | --- |
-| `~/.local/bin/omarchy-wwan` | CLI, waybar JSON, health check |
+| `~/.local/bin/omarchy-wwan` | CLI, status JSON, health check |
 | `~/.local/bin/omarchy-launch-wwan` | opens the menu |
 | `~/.local/bin/omarchy-wwan-providers` | reads the carrier database |
 | `~/.config/omarchy/wwan.conf` | APN, SIM slot, PIN, route metric |
-| `~/.config/omarchy/extensions/menu.sh` | Setup → Mobile entry (marked block) |
-| `~/.config/waybar/config.jsonc`, `style.css` | indicator (marked block) |
+| `~/.config/omarchy/plugins/erruviel.wwan/` | the shell plugin (bar widget) |
+| `~/.config/omarchy/shell.json` | widget placed in `bar.layout` |
+| `~/.config/omarchy/extensions/omarchy-menu.jsonc` | Setup → Mobile entries (marked block) |
 | `~/.config/omarchy/hooks/post-update.d/omarchy-wwan` | post-update check |
 | `/usr/local/bin/omarchy-wwan-helper` | privileged operations |
 | `/etc/systemd/system/omarchy-wwan*.service` | connect at boot and after resume |
