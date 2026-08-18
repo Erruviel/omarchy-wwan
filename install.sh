@@ -69,8 +69,13 @@ esac
 # ----------------------------------------------------------------- user config
 
 mkdir -p "$HOME/.config/omarchy"
-if [[ -f $CONFIG ]]; then
+if [[ -L $CONFIG ]]; then
+  echo "   warning: $CONFIG is a symlink; leaving it untouched" >&2
+elif [[ -f $CONFIG ]]; then
   say "keeping existing $CONFIG"
+  # The config may hold a SIM PIN, so keep it private. This runs unprivileged
+  # on the user's own file — not a privilege boundary, unlike the system half.
+  chmod 600 "$CONFIG"
 else
   say "creating $CONFIG"
   install -m 600 "$REPO/config/wwan.conf" "$CONFIG"

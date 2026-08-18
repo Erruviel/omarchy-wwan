@@ -16,6 +16,18 @@ SRC=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 TARGET_USER=${1:?target user required}
 CONFIG=${2:?config path required}
 
+# CONFIG names a path in the user's home, but everything here runs as root. A
+# symlink at that path could point anywhere, so following it — to read, and
+# especially to chown or chmod — would let an unprivileged user hand themselves
+# an arbitrary root-owned file. Refuse a symlink outright, and never touch the
+# config's ownership or mode from root: that is the unprivileged user-side
+# installer's job, and root can read the user's private config regardless of
+# who owns it.
+if [[ -L $CONFIG ]]; then
+  echo "refusing: $CONFIG is a symlink, not a regular file" >&2
+  exit 1
+fi
+
 say() { printf '   %s\n' "$*"; }
 
 say "helper -> /usr/local/bin/omarchy-wwan-helper"
@@ -29,12 +41,6 @@ install -m 644 "$SRC/omarchy-wwan-resume.service" /etc/systemd/system/omarchy-ww
 say "polkit rule"
 install -d -m 750 /etc/polkit-1/rules.d
 install -m 644 "$SRC/50-omarchy-wwan.rules" /etc/polkit-1/rules.d/50-omarchy-wwan.rules
-
-# The config may hold a SIM PIN.
-if [[ -f $CONFIG ]]; then
-  chown "$TARGET_USER" "$CONFIG"
-  chmod 600 "$CONFIG"
-fi
 
 say "reloading systemd"
 systemctl daemon-reload
